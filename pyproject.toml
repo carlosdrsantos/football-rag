@@ -1,0 +1,28 @@
+[project]
+name = "lotg-rag"
+version = "0.1.0"
+description = "Retrieval-augmented question answering over the IFAB Laws of the Game"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2", "ruff>=0.5"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
