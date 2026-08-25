@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: install fetch parse db lint test clean
+.PHONY: install fetch parse chunk db lint test clean
 
 install:
 	python3 -m venv .venv
@@ -12,6 +12,9 @@ fetch:
 
 parse:
 	$(PY) -m lotg.ingest.parse
+
+chunk:
+	$(PY) -m lotg.ingest.chunk
 
 db:
 	docker compose up -d

@@ -9,10 +9,11 @@ missing answer but a confident one citing the wrong clause.
 
 ## Status
 
-Ingestion works. Retrieval, serving and evaluation are next.
+Ingestion and chunking work. Retrieval, serving and evaluation are next.
 
 ```
-corpus      87 sections, 104,803 chars, all 17 Laws
+corpus      87 sections -> 139 chunks, 104,803 chars, all 17 Laws
+chunks      median 642 chars, max 2,057, none over the 2,000 cap
 amended     19 sections changed this edition, 22 repealed passages dropped
 eval set    789 official IFAB Q&A pairs
 ```
@@ -51,6 +52,32 @@ cited, and describe a rule that no longer exists, which is worse than no answer
 at all. The parser drops deleted wording from the indexed text and keeps it in
 `removed_text`, where it is useful for building version-sensitive eval cases.
 
+## Every chunk says where it came from
+
+Sections run from 21 to 13,901 chars, so the long ones split at `<h3>`
+boundaries and, failing that, between paragraphs. Four sections needed the
+paragraph fallback, the ones written as continuous prose with no subheadings.
+
+Size alone would have been the wrong rule twice.
+
+Law 12.4 uses all-caps headings as group labels rather than rules. It files
+"Sending-off offences" under PLAYERS and "Sending-off" under TEAM OFFICIALS, so
+a chunk titled "Sending-off" cannot say whether it sends off a player or a
+coach, and "when is a coach sent off" has to reach the second one. An all-caps
+`<h3>` becomes a group and carries down to its siblings.
+
+The clash is not confined to Law 12. "Procedure" appears as a subsection three
+times across the corpus and "Advantage" twice. So every chunk leads with a
+breadcrumb, and the breadcrumb is part of what gets embedded:
+
+```
+Law 12 Fouls and Misconduct > 12.4 Disciplinary action > TEAM OFFICIALS > Sending-off
+```
+
+`test_chunking_loses_no_text` reassembles every chunk back into its section and
+compares against the parsed text, so a splitter that quietly drops a list item
+fails the build.
+
 ## Bugs found so far
 
 **Clause headings were being deleted silently.** The parser dropped `<button>`
@@ -77,6 +104,7 @@ src/lotg/
   sources.py          the 17 Law pages and their URLs
   ingest/fetch.py     download to data/raw/ (cached)
   ingest/parse.py     HTML -> sections.jsonl (corpus) + faqs.jsonl (eval set)
+  ingest/chunk.py     sections.jsonl -> chunks.jsonl, the unit that gets embedded
 tests/test_parse.py   parser regressions and corpus integrity
 docker-compose.yml    Postgres 17 with pgvector on :5433
 ```
@@ -90,6 +118,7 @@ retrieval gets measured, and none of those passes should re-download the site.
 make install     # venv and dependencies
 make fetch       # 17 pages -> data/raw/, ~5 MB, cached, 1 req/sec
 make parse       # -> data/processed/sections.jsonl + faqs.jsonl
+make chunk       # -> data/processed/chunks.jsonl
 make test        # parser regressions and corpus integrity
 make db          # Postgres with pgvector
 ```
@@ -97,9 +126,7 @@ make db          # Postgres with pgvector
 ## Roadmap
 
 - [x] Ingestion, corpus and eval set kept apart
-- [ ] Chunking. 11 of 87 sections run past 2,000 chars and Law 12.4 hits 13,901,
-      so they need splitting on `<h3>` boundaries without orphaning a subsection
-      from its clause
+- [x] Chunking on `<h3>` boundaries with breadcrumbs, no text lost
 - [ ] Baseline dense retrieval on pgvector, kept simple, measured before it is
       improved
 - [ ] Eval harness. Recall@k over the 789 FAQs, scored on whether the right Law
@@ -116,6 +143,8 @@ make db          # Postgres with pgvector
   the Law. Correct, but it caps citation precision for them.
 - The 789 FAQs are lopsided, 296 for Law 12 against 2 for Law 2. Any headline
   eval number needs a per-Law breakdown next to it or Law 12 swamps it.
+- Chunks do not overlap and the 2,000 char cap is a guess. Both are knobs to
+  test once there is a retrieval number to move.
 
 ## Source
 
