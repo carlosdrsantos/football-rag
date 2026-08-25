@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: install fetch parse chunk db lint test clean
+.PHONY: install fetch parse chunk db index search eval lint test clean
 
 install:
 	python3 -m venv .venv
@@ -19,6 +19,15 @@ chunk:
 db:
 	docker compose up -d
 	docker compose exec -T db pg_isready -U lotg -d lotg
+
+index:
+	$(PY) -m lotg.retrieval.build
+
+search:
+	$(PY) -m lotg.retrieval.search $(Q)
+
+eval:
+	$(PY) -m lotg.evaluate
 
 lint:
 	.venv/bin/ruff check src tests

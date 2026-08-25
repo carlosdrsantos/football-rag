@@ -9,13 +9,14 @@ missing answer but a confident one citing the wrong clause.
 
 ## Status
 
-Ingestion and chunking work. Retrieval, serving and evaluation are next.
+Ingestion, chunking, dense retrieval and the eval harness work. Serving is next.
 
 ```
 corpus      87 sections -> 139 chunks, 104,803 chars, all 17 Laws
 chunks      median 642 chars, max 2,057, none over the 2,000 cap
 amended     19 sections changed this edition, 22 repealed passages dropped
 eval set    789 official IFAB Q&A pairs
+retrieval   recall@1 47.3%, @5 78.7%, @10 89.7%  (bge-small-en-v1.5, 384d, pgvector)
 ```
 
 ## The corpus is the Laws, the eval set is IFAB's Q&A
@@ -78,7 +79,51 @@ Law 12 Fouls and Misconduct > 12.4 Disciplinary action > TEAM OFFICIALS > Sendin
 compares against the parsed text, so a splitter that quietly drops a list item
 fails the build.
 
+## The baseline, and why the number is a floor
+
+Dense retrieval only: one embedding model, cosine distance over pgvector, no
+hybrid search and no reranking. Measured first so later changes have something
+to move.
+
+| k | recall | random | lift |
+|---:|---:|---:|---:|
+| 1 | 47.3% | 10.2% | 4.6x |
+| 3 | 67.6% | 26.6% | 2.5x |
+| 5 | 78.7% | 39.0% | 2.0x |
+| 10 | 89.7% | 58.7% | 1.5x |
+
+The random column is computed exactly, not sampled: for a Law holding n of the N
+chunks, k blind draws miss it with probability C(N-n, k) / C(N, k). Without it
+the recall column means nothing, and there is a second baseline worth knowing:
+Law 12 alone accounts for 296 of the 789 questions, so a system that always
+answered from Law 12 would score 37.5%.
+
+**The 47.3% is a lower bound, because the ground truth is imperfect.** The
+per-Law breakdown pointed at Law 9, which scores 5.3% across 19 questions. Law 9
+defines when the ball is in and out of play and is 977 chars in two chunks. Its
+questions look like this:
+
+> *A player plays the ball, which touches the referee, stays on the field, and
+> possession changes. What is the decision?*
+
+IFAB files that under Law 9. Its own answer is "play restarts with a dropped
+ball", which is Law 8.2. Retrieval returns Law 8.2 Dropped ball, and the metric
+scores it wrong. Three of the Law 9 misses I read through were all this same
+shape: retrieval found the clause containing the ruling, and got marked down
+because the question was filed under the clause describing the scenario.
+
+The small definitional Laws (9, 16, 6, 2) are where this bites. The fix is the
+relevance definition, not the retriever: gold should be the Law holding the
+ruling, not the Law the question is filed under. That lands before hybrid search,
+otherwise the hybrid numbers are tuned against noise.
+
 ## Bugs found so far
+
+**`register_vector` failed before the extension existed.** The store created
+the `vector` extension inside its schema DDL, but `connect()` called
+`register_vector` first, which looks the type up by OID and found nothing.
+`connect()` now creates the extension itself, so the type is guaranteed before
+anything asks for it.
 
 **Clause headings were being deleted silently.** The parser dropped `<button>`
 elements as chrome. On theifab.com every clause heading sits inside the collapse
@@ -105,6 +150,11 @@ src/lotg/
   ingest/fetch.py     download to data/raw/ (cached)
   ingest/parse.py     HTML -> sections.jsonl (corpus) + faqs.jsonl (eval set)
   ingest/chunk.py     sections.jsonl -> chunks.jsonl, the unit that gets embedded
+  retrieval/embedder.py  bge-small-en-v1.5; queries get the instruction prefix
+  retrieval/store.py     pgvector schema, insert, cosine search
+  retrieval/build.py     chunks.jsonl -> pgvector
+  retrieval/search.py    query it from the shell
+evaluate.py           recall@k over the FAQs -> evals/baseline.json
 tests/test_parse.py   parser regressions and corpus integrity
 docker-compose.yml    Postgres 17 with pgvector on :5433
 ```
@@ -121,16 +171,23 @@ make parse       # -> data/processed/sections.jsonl + faqs.jsonl
 make chunk       # -> data/processed/chunks.jsonl
 make test        # parser regressions and corpus integrity
 make db          # Postgres with pgvector
+make index       # embed the chunks into pgvector
+make eval        # recall@k over the 789 FAQs -> evals/baseline.json
+make search Q="when can a coach be sent off"
 ```
+
+Embeddings run locally through sentence-transformers, so there is no API key to
+set and the eval reproduces on a fresh clone.
 
 ## Roadmap
 
 - [x] Ingestion, corpus and eval set kept apart
 - [x] Chunking on `<h3>` boundaries with breadcrumbs, no text lost
-- [ ] Baseline dense retrieval on pgvector, kept simple, measured before it is
-      improved
-- [ ] Eval harness. Recall@k over the 789 FAQs, scored on whether the right Law
-      came back, which is an objective number rather than an LLM-judged one
+- [x] Baseline dense retrieval on pgvector, measured against exact random and
+      majority-Law baselines
+- [x] Eval harness. Recall@k over the 789 FAQs, no LLM judge involved
+- [ ] Fix the relevance definition: gold Law should be the one holding the
+      ruling, not the one the question is filed under
 - [ ] Hybrid BM25 and dense, then reranking, re-running the eval on each change
 - [ ] FastAPI service, Docker, Azure
 - [ ] Eval in CI, blocking merges on retrieval regression
@@ -144,7 +201,12 @@ make db          # Postgres with pgvector
 - The 789 FAQs are lopsided, 296 for Law 12 against 2 for Law 2. Any headline
   eval number needs a per-Law breakdown next to it or Law 12 swamps it.
 - Chunks do not overlap and the 2,000 char cap is a guess. Both are knobs to
-  test once there is a retrieval number to move.
+  test now that there is a retrieval number to move.
+- Law-level relevance is coarse: a hit anywhere in the right Law counts, even
+  when Law 12 spans 22 chunks. Clause-level gold labels would be stricter, and
+  would need annotation the FAQs do not provide.
+- No answer generation yet, so nothing here measures faithfulness or citation
+  accuracy. This is retrieval only.
 
 ## Source
 
