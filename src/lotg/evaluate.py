@@ -1,17 +1,16 @@
 """Measure retrieval against IFAB's own Q&A.
 
 Each question is a refereeing scenario, and recall@k asks whether any chunk from
-a Law IFAB filed it under came back. No annotation and no LLM judge, just set
+a gold Law came back. No LLM judge and nothing to run at eval time but set
 membership over Law numbers.
 
 Two baselines sit next to it, because recall@k alone is unreadable: always
 answering from Law 12, and k blind draws, which hit a gold set covering n of N
 chunks with probability 1 - C(N-n, k) / C(N, k).
 
-The old single-label score is reported alongside. It scored each of the 789 FAQ
-rows against the one Law that row was filed under, so it penalised cross-listed
-questions. Both come out of the same retrieval pass, so the gap between them is
-the cost of the old answer key and nothing else.
+The two answer keys `gold.py` replaced are scored in the same pass off the same
+retrieved lists, so the gaps between the three columns are the cost of each key
+and nothing else.
 """
 
 import argparse
@@ -75,10 +74,10 @@ def evaluate(limit: int | None = None) -> dict:
 
     top_k = max(KS)
     detail_k = min(KS)
-    correct_at = dict.fromkeys(KS, 0)
-    filed_correct_at = dict.fromkeys(KS, 0)
+    correct_at = {key: dict.fromkeys(KS, 0) for key in ("gold", "crosslisted", "filed")}
     per_law_total: dict[int, int] = defaultdict(int)
-    per_law_correct: dict[int, int] = defaultdict(int)
+    per_law_answered: dict[int, int] = defaultdict(int)
+    per_law_present: dict[int, int] = defaultdict(int)
 
     with store.connect() as connection:
         if store.count(connection) == 0:
@@ -88,28 +87,40 @@ def evaluate(limit: int | None = None) -> dict:
             laws = [hit.law_number for hit in store.search(connection, vector, top_k)]
             for k in KS:
                 returned = set(laws[:k])
-                correct_at[k] += bool(returned & query.laws)
-                filed_correct_at[k] += sum(law in returned for law in query.filed)
+                correct_at["gold"][k] += bool(returned & query.gold)
+                correct_at["crosslisted"][k] += bool(returned & query.crosslisted)
+                correct_at["filed"][k] += sum(law in returned for law in query.filed)
 
+            # Two different questions, and they diverge a long way. "answered" is
+            # the headline metric restricted to this Law's traffic. "present" is
+            # whether this Law itself surfaced, which is what citation precision
+            # needs and what the small definitional Laws fail.
             top = set(laws[:detail_k])
-            for law in query.laws:
+            for law in query.gold:
                 per_law_total[law] += 1
-                per_law_correct[law] += law in top
+                per_law_answered[law] += bool(top & query.gold)
+                per_law_present[law] += law in top
 
-    gold_sets = [query.laws for query in queries]
-    filed_sets = [frozenset([law]) for query in queries for law in query.filed]
+    gold_sets = [query.gold for query in queries]
+    crosslisted = [query.crosslisted for query in queries]
+    filed = [frozenset([law]) for query in queries for law in query.filed]
     majority, majority_law = _majority_recall(gold_sets)
     return {
         "model": embedder.MODEL_NAME,
         "dimensions": embedder.dimensions(),
         "chunks": len(chunks),
-        "cross_listed_queries": sum(len(laws) > 1 for laws in gold_sets),
-        **_scores(chunks, gold_sets, correct_at),
-        "single_label": _scores(chunks, filed_sets, filed_correct_at),
+        "cross_listed_queries": sum(len(laws) > 1 for laws in crosslisted),
+        "relabelled_queries": sum(q.gold != q.crosslisted for q in queries),
+        **_scores(chunks, gold_sets, correct_at["gold"]),
+        "key_before_relabelling": _scores(chunks, crosslisted, correct_at["crosslisted"]),
+        "key_before_collapsing": _scores(chunks, filed, correct_at["filed"]),
         "baseline_majority_law": {"law": majority_law, "recall@any": majority},
         "detail_k": detail_k,
-        "per_law_recall_at_detail_k": {
-            law: per_law_correct[law] / total for law, total in sorted(per_law_total.items())
+        "per_law_answered_at_detail_k": {
+            law: per_law_answered[law] / total for law, total in sorted(per_law_total.items())
+        },
+        "per_law_present_at_detail_k": {
+            law: per_law_present[law] / total for law, total in sorted(per_law_total.items())
         },
         "per_law_queries": dict(sorted(per_law_total.items())),
     }
@@ -128,14 +139,19 @@ def report(result: dict) -> None:
     print(f"corpus   {result['chunks']} chunks")
     print(
         f"queries  {result['queries']} distinct questions, "
-        f"{result['cross_listed_queries']} filed under more than one Law\n"
+        f"{result['cross_listed_queries']} cross-listed, "
+        f"{result['relabelled_queries']} relabelled\n"
     )
 
     print("\n".join(_table(result)))
 
-    single = result["single_label"]
-    print(f"\nunder the old single-label key ({single['queries']} FAQ rows):")
-    print("\n".join(f"  {line}" for line in _table(single)))
+    older = [
+        ("IFAB's cross-listing, no relabelling", result["key_before_relabelling"]),
+        ("one Law per FAQ row, no collapsing", result["key_before_collapsing"]),
+    ]
+    for label, scores in older:
+        print(f"\nunder {label} ({scores['queries']} queries):")
+        print("\n".join(f"  {line}" for line in _table(scores)))
 
     majority = result["baseline_majority_law"]
     print(
@@ -143,11 +159,14 @@ def report(result: dict) -> None:
         f"{majority['recall@any']:.1%} at any k"
     )
 
-    print(f"\nrecall@{result['detail_k']} by Law (n = questions with that Law in the gold set):")
-    for law, score in result["per_law_recall_at_detail_k"].items():
+    k = result["detail_k"]
+    print("\nby Law, over the questions with that Law in the gold set:")
+    print(f"  {'Law':>6} {'n':>4}  {f'answered@{k}':>11}  {f'Law shown@{k}':>13}")
+    for law, answered in result["per_law_answered_at_detail_k"].items():
         n = result["per_law_queries"][law]
-        bar = "#" * round(score * 20)
-        print(f"  Law {law:>2}  n={n:>3}  {score:>6.1%}  {bar}")
+        present = result["per_law_present_at_detail_k"][law]
+        bar = "#" * round(present * 20)
+        print(f"  Law {law:>2} {n:>4}  {answered:>10.1%}  {present:>12.1%}  {bar}")
 
 
 def main() -> None:

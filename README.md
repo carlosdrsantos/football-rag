@@ -16,7 +16,7 @@ corpus      87 sections -> 139 chunks, 104,803 chars, all 17 Laws
 chunks      median 642 chars, max 2,057, none over the 2,000 cap
 amended     19 sections changed this edition, 22 repealed passages dropped
 eval set    789 official IFAB Q&A rows, 595 distinct questions after collapsing
-retrieval   recall@1 62.5%, @5 92.1%, @10 97.1%  (bge-small-en-v1.5, 384d, pgvector)
+retrieval   recall@1 63.7%, @5 92.9%, @10 97.5%  (bge-small-en-v1.5, 384d, pgvector)
 ```
 
 ## The corpus is the Laws, the eval set is IFAB's Q&A
@@ -94,9 +94,24 @@ That one is filed under Law 1, Law 12 and Law 14. Under the old key it was three
 separate questions, each with two of its three correct answers marked wrong. So
 a question is now one query, and its gold set is every Law IFAB filed it under.
 
-`gold.py` does the collapse and nothing else. The old score is still computed in
-the same pass, off the same retrieved lists, so nothing but the key differs
-between the two columns.
+That fixes the cross-listed questions. It does nothing for the ones IFAB filed
+only under the Law describing the scenario while the ruling lives elsewhere, so
+every one of the 595 was then read against its official answer. 23 needed a
+change, and `data/labels/overrides.jsonl` records each with the reason:
+
+```json
+{"id": "65c174a2", "gold": [3, 8],
+ "note": "dog is an outside agent, restart is a dropped ball in the penalty area (Law 8.2)"}
+```
+
+Everything not in that file keeps IFAB's own filing, so the labels are a diff
+against the source rather than a replacement for it, and the 23 judgement calls
+are the only thing a reader has to audit. `test_every_override_matches_a_real_question`
+fails the build on a mistyped id, which would otherwise relabel nothing in
+silence.
+
+All three keys are scored in the same pass off the same retrieved lists, so
+nothing but the key differs between the columns.
 
 ## The baseline
 
@@ -104,48 +119,62 @@ Dense retrieval only: one embedding model, cosine distance over pgvector, no
 hybrid search and no reranking. Measured first so later changes have something
 to move.
 
-| k | recall | random | lift | old key | old random | old lift |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 62.5% | 13.5% | 4.6x | 47.3% | 10.2% | 4.6x |
-| 3 | 83.2% | 33.7% | 2.5x | 67.6% | 26.6% | 2.5x |
-| 5 | 92.1% | 47.5% | 1.9x | 78.7% | 39.0% | 2.0x |
-| 10 | 97.1% | 67.3% | 1.4x | 89.7% | 58.7% | 1.5x |
+| k | recall | random | lift | cross-listing only | one Law per row |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 63.7% | 14.0% | 4.6x | 62.5% | 47.3% |
+| 3 | 84.4% | 34.7% | 2.4x | 83.2% | 67.6% |
+| 5 | 92.9% | 48.7% | 1.9x | 92.1% | 78.7% |
+| 10 | 97.5% | 68.4% | 1.4x | 97.1% | 89.7% |
 
 The random column is computed exactly, not sampled: for a gold set covering n of
 the N chunks, k blind draws miss all of it with probability C(N-n, k) / C(N, k).
-There is a second baseline worth knowing too. Law 12 is in 296 of the 595 gold
-sets, so a system that always answered from Law 12 scores 49.7%.
+There is a second baseline worth knowing too. Law 12 is in 308 of the 595 gold
+sets, so a system that always answered from Law 12 scores 51.8%.
 
-**Fixing the key moved recall 15 points and moved the lift by nothing.** Three
-gold Laws instead of one is a wider target for a blind draw as well, and the
-random column absorbs the whole gain. The retriever did not get better, the
-question got easier, and the only column that noticed is the one that is
-supposed to. Any single number here is worthless without it.
+**Fixing the key moved recall 16 points and moved the lift by nothing.** A gold
+set of three Laws is a wider target for a blind draw as well, and the random
+column absorbs the whole gain. The retriever did not get better, the question
+got easier, and the only column that noticed is the one that is supposed to. Any
+single number here is worthless without it.
 
-## Law 9 is still broken and the reason is still the key
+The second thing that column says is that reading all 595 answers by hand was
+worth 1.2 points. IFAB's own cross-listing was doing almost all the work, and
+the 23 overrides mostly confirmed the filing rather than corrected it. That is
+not the result I expected going in, and it is the useful kind of negative:
+the answer key is now audited rather than assumed, which is what makes the
+hybrid numbers coming next worth comparing to these.
 
-Law 9 scores 5.3% at k=1 across 19 questions, unchanged by the collapse. It
-defines when the ball is in and out of play, 977 chars in two chunks, and its
-questions look like this:
+## The per-Law table was asking the wrong question
 
-> *A player plays the ball, which touches the referee, stays on the field, and
-> possession changes. What is the decision?*
+I read the first per-Law breakdown as "Law 9 retrieval is broken at 5.3%". It
+was measuring whether a Law *itself* appeared at k=1, which is not whether the
+question got answered. Once gold sets hold more than one Law those come apart,
+and they come apart a long way:
 
-IFAB files that under Law 9 only. Its own answer is "play restarts with a dropped
-ball", which is Law 8.2. Retrieval returns Law 8.2 Dropped ball and the metric
-scores it wrong. Cross-listing does not save these because IFAB never filed them
-anywhere else.
+| Law | n | answered@1 | Law shown@1 |
+|---:|---:|---:|---:|
+| 5 | 76 | 73.7% | 26.3% |
+| 6 | 7 | 71.4% | 14.3% |
+| 9 | 19 | 42.1% | 5.3% |
+| 14 | 73 | 71.2% | 43.8% |
+| 16 | 20 | 30.0% | 10.0% |
+| 2 | 2 | 0.0% | 0.0% |
 
-There is direct evidence for how common that is. 72 of the answers name a Law
-outright, and in 30 of them the named Law is not one the question is filed under.
-The small definitional Laws are where it bites: Law 2 scores 0% over 2 questions,
-Law 16 11%, Law 6 14%, Law 5 26%.
+Law 9 defines when the ball is in and out of play, 977 chars in two chunks. Its
+questions ask what happens when the ball hits the referee, and IFAB's own answer
+is "dropped ball", which is Law 8.2. Retrieval returns Law 8.2, which is right,
+and Law 9 never surfaces. 42% of those questions are answered, not 5%.
 
-The remaining fix is to read the gold Law out of the answer text rather than the
-filing. Doing that automatically means either lexical matching, which would
-flatter the BM25 half of a hybrid retriever measured against it, or an LLM
-labelling pass written to disk once and committed. The second keeps the eval
-itself free of any model, which is the property worth protecting.
+Both columns are worth keeping, because they fail for different reasons and only
+one of them is a retrieval problem. `answered` is the headline metric restricted
+to one Law's traffic. `Law shown` is what citation precision needs, and a Law
+that never surfaces cannot be cited even when the answer is correct.
+
+What survives as a genuine weakness is the small procedural Laws. Law 16 answers
+30% of its questions and Law 2 answers neither of its two. Both are three chunks
+and about 2,000 chars, against Law 12's 25 chunks and 22,238, and they lose on
+vocabulary the dense model cannot match. That is the case for hybrid search, and
+it is now measured against a key I have read rather than one I assumed.
 
 ## Bugs found so far
 
@@ -186,6 +215,7 @@ src/lotg/
   retrieval/search.py    query it from the shell
   gold.py             FAQ rows -> one query per question, gold set of Laws
   evaluate.py         recall@k over those queries -> evals/baseline.json
+data/labels/          the 23 relabelled questions, with a reason each
 tests/                parser regressions, chunker, eval maths, corpus integrity
 docker-compose.yml    Postgres 17 with pgvector on :5433
 ```
@@ -219,8 +249,8 @@ set and the eval reproduces on a fresh clone.
 - [x] Eval harness. Recall@k over the FAQs, no LLM judge involved
 - [x] Multi-Law gold sets from IFAB's own cross-listing, with the old key still
       reported next to the new one
-- [ ] Gold Laws read from the answer text, for the questions IFAB filed only
-      under the Law describing the scenario
+- [x] All 595 answers read against their filing, 23 relabelled with a reason
+      each, older keys still scored in the same pass
 - [ ] Hybrid BM25 and dense, then reranking, re-running the eval on each change
 - [ ] FastAPI service, Docker, Azure
 - [ ] Eval in CI, blocking merges on retrieval regression
@@ -231,8 +261,11 @@ set and the eval reproduces on a fresh clone.
   against, and the IFAB does not serve old ones under `/laws/latest/`.
 - Seven `Introduction` sections have no clause number and can only be cited to
   the Law. Correct, but it caps citation precision for them.
-- The eval set is lopsided. Law 12 is in 296 of the 595 gold sets, Law 2 in 2.
+- The eval set is lopsided. Law 12 is in 308 of the 595 gold sets, Law 2 in 2.
   Any headline number needs the per-Law breakdown next to it or Law 12 swamps it.
+- The 23 relabels are one person's reading of one official answer each. The
+  reasons are committed so they can be argued with, but nobody has second-read
+  them, and two questions is not enough to say anything about Law 2.
 - Questions are collapsed on exact text. Two pages wording the same scenario
   differently stay separate, so 595 is an upper bound on the distinct count.
 - Chunks do not overlap and the 2,000 char cap is a guess. Both are knobs to
