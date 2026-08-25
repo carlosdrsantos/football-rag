@@ -9,14 +9,15 @@ missing answer but a confident one citing the wrong clause.
 
 ## Status
 
-Ingestion, chunking, hybrid retrieval and the eval harness work. Serving is next.
+Ingestion, chunking, reranked hybrid retrieval and the eval harness work.
+Serving is next.
 
 ```
 corpus      87 sections -> 139 chunks, 104,803 chars, all 17 Laws
 chunks      median 642 chars, max 2,057, none over the 2,000 cap
 amended     19 sections changed this edition, 22 repealed passages dropped
 eval set    789 official IFAB Q&A rows, 595 distinct questions after collapsing
-retrieval   recall@1 69.1%, @5 94.5%, @10 98.8%  (BM25 + bge-small-en-v1.5, RRF)
+retrieval   recall@1 73.4%, @5 96.3%, @10 98.8%  (BM25 + bge-small, RRF, cross-encoder)
 ```
 
 ## The corpus is the Laws, the eval set is IFAB's Q&A
@@ -128,15 +129,15 @@ Cosine similarity and a BM25 score have nothing to say to each other, so the two
 are fused on **rank**, not score. Reciprocal rank fusion gives a chunk
 1 / (60 + rank) from each list it appears in and sums.
 
-| k | dense | BM25 | hybrid | random | lift |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 63.7% | 66.6% | **69.1%** | 14.0% | 4.9x |
-| 3 | 84.4% | 86.6% | **89.7%** | 34.7% | 2.6x |
-| 5 | 92.9% | 92.6% | **94.5%** | 48.7% | 1.9x |
-| 10 | 97.5% | 98.0% | **98.8%** | 68.4% | 1.4x |
+| k | dense | BM25 | hybrid | reranked | random | lift |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 63.7% | 66.6% | 69.1% | **73.4%** | 14.0% | 5.3x |
+| 3 | 84.4% | 86.6% | 89.7% | **90.3%** | 34.7% | 2.6x |
+| 5 | 92.9% | 92.6% | 94.5% | **96.3%** | 48.7% | 2.0x |
+| 10 | 97.5% | 98.0% | 98.8% | 98.8% | 68.4% | 1.4x |
 
-This time the lift moved too, 4.6x to 4.9x at k=1. The answer key did not change,
-so unlike the last two rounds the retriever genuinely got better.
+This time the lift moved too, 4.6x to 5.3x at k=1. The answer key did not change,
+so unlike the earlier rounds the retriever genuinely got better.
 
 BM25 alone beating the embedding model at k=1 was not what I expected. A 384-dim
 model on a rulebook full of exact terms of art is not obviously the stronger leg,
@@ -149,32 +150,15 @@ breadcrumb alongside the body is worth having though: BM25 scores 66.6% on
 breadcrumb plus body against 65.2% on body alone.
 
 The older answer keys are still scored every run, so a change to the key can
-never be mistaken for a change to the retriever. Hybrid scores 68.2% at k=1 under
-IFAB's raw cross-listing and 51.6% under one-Law-per-row.
-
-The random column is computed exactly, not sampled: for a gold set covering n of
-the N chunks, k blind draws miss all of it with probability C(N-n, k) / C(N, k).
-There is a second baseline worth knowing too. Law 12 is in 308 of the 595 gold
-sets, so a system that always answered from Law 12 scores 51.8%.
-
-That column earned its place on the two rounds before this one. Fixing the answer
-key moved dense recall@1 from 47.3% to 63.7% and moved the lift by nothing: a
-gold set of three Laws is a wider target for a blind draw too, and the random
-column absorbed the whole gain. The retriever had not improved, the question had
-got easier, and the lift is what said so.
-
-Reading all 595 answers by hand was worth 1.2 of those points. IFAB's own
-cross-listing was doing almost all the work and the 23 overrides mostly confirmed
-the filing rather than corrected it. Not the result I expected, and the useful
-kind of negative: the key is audited rather than assumed, which is what makes
-these hybrid numbers worth anything.
+never be mistaken for a change to the retriever. The reranked stack scores 72.3%
+at k=1 under IFAB's raw cross-listing and 54.6% under one-Law-per-row.
 
 ## The per-Law table was asking the wrong question
 
 I read the first per-Law breakdown as "Law 9 retrieval is broken at 5.3%". It
 was measuring whether a Law *itself* appeared at k=1, which is not whether the
 question got answered. Once gold sets hold more than one Law those come apart,
-and they come apart a long way:
+and they come apart a long way (hybrid, before reranking):
 
 | Law | n | answered@1 | Law shown@1 |
 |---:|---:|---:|---:|
@@ -216,6 +200,93 @@ it, which makes it the argument for query expansion or a reranker rather than fo
 another retriever. Two questions is also not enough to conclude anything, so it
 is written down as an observation, not a result.
 
+## A cross-encoder over the top ten
+
+Both retrievers above score a question against a chunk without ever seeing the
+two together. The chunk becomes 384 numbers, or a bag of stemmed terms, before
+the question arrives. A cross-encoder reads the pair as one sequence, which is
+why it can tell that "when can a coach be sent off" wants TEAM OFFICIALS and not
+PLAYERS. It costs a forward pass per candidate, so it reranks rather than
+searches: `BAAI/bge-reranker-base` over what hybrid already found.
+
+**Depth 10, chosen from the curve rather than taste.** Hybrid recall@10 is 98.8%,
+so the answer is nearly always inside what the cross-encoder gets to see. Past
+depth 5 the curve is flat, and paying for 25 buys nothing:
+
+| depth | @1 | @5 | ms/query |
+|---:|---:|---:|---:|
+| 0 | 69.1% | 94.5% | 0 |
+| 5 | 73.6% | 94.5% | 146 |
+| **10** | **73.4%** | **96.3%** | **291** |
+| 15 | 73.9% | 96.1% | 437 |
+| 25 | 73.3% | 96.1% | 728 |
+
+The spread from 5 to 25 is four questions out of 595, which is noise. Depth 10 is
+where recall@5 tops out, and recall@5 is what a generator would actually be fed.
+
+**A cheaper cross-encoder is worse than none at all.** `ms-marco-MiniLM-L-6-v2`
+is 23M parameters against 278M and runs in 138 ms instead of 728, and it scores
+68.4% at k=1: *below* the 69.1% of the hybrid it was reranking. It reorders
+confidently and wrongly. That is the useful half of the comparison, because the
+small model is the one you would reach for on latency grounds.
+
+## What reranking fixed, and what it broke
+
+It went after exactly the failure it was picked for. The small procedural Laws
+were losing because the right clause sat at rank 3 or 4, not because it was
+missing, which is the definition of a reranking problem:
+
+| Law | n | answered@1 | Law shown@1 |
+|---:|---:|---:|---:|
+| 16 | 20 | 35.0% -> **65.0%** | 10.0% -> **45.0%** |
+| 9 | 19 | 47.4% -> 52.6% | 10.5% -> **36.8%** |
+| 6 | 7 | 85.7% -> 85.7% | 28.6% -> **71.4%** |
+| 17 | 8 | 62.5% -> 62.5% | 25.0% -> **50.0%** |
+| 12 | 308 | 66.6% -> 74.0% | 51.9% -> 57.8% |
+
+The query the chunking work was built around lands too. `when can a coach be sent
+off` needs Law 12.4 > TEAM OFFICIALS > Sending-off, not the identically titled
+one under PLAYERS:
+
+```
+hybrid     1. Law 3  > 3.6 Players and substitutes sent off
+           2. Law 12 > 12.4 Disciplinary action > TEAM OFFICIALS
+reranked   1. Law 12 > 12.4 Disciplinary action > TEAM OFFICIALS
+           2. Law 5  > 5.3 Powers and duties > Disciplinary action
+```
+
+The `Law shown` column is the one to watch. Law 6 answers the same share of its
+questions either way, but the Law itself now surfaces at rank 1 for 71% of them
+instead of 29%, and a Law that never surfaces cannot be cited. Citation precision
+is the stated point of the project and it is the column that moved most.
+
+It is not free. Law 11 drops 86.7% to 80.0% answered@1 across 75 questions, Law
+10 drops 79.3% to 72.4%, and Law 1 drops 87.5% to 62.5% on 8 questions. Offside
+is the clearest loss: the dense model was already good at it and the cross-encoder
+talks it out of correct answers. Net it is worth 4.3 points, and the losses are
+recorded because a headline number that hides them is worth less than the points
+it claims.
+
+Law 2 still answers neither of its questions, exactly as predicted. Reranking
+cannot invent the word "burst".
+
+The random column is computed exactly, not sampled: for a gold set covering n of
+the N chunks, k blind draws miss all of it with probability C(N-n, k) / C(N, k).
+There is a second baseline worth knowing too. Law 12 is in 308 of the 595 gold
+sets, so a system that always answered from Law 12 scores 51.8%.
+
+That column earned its place on the two rounds before this one. Fixing the answer
+key moved dense recall@1 from 47.3% to 63.7% and moved the lift by nothing: a
+gold set of three Laws is a wider target for a blind draw too, and the random
+column absorbed the whole gain. The retriever had not improved, the question had
+got easier, and the lift is what said so.
+
+Reading all 595 answers by hand was worth 1.2 of those points. IFAB's own
+cross-listing was doing almost all the work and the 23 overrides mostly confirmed
+the filing rather than corrected it. Not the result I expected, and the useful
+kind of negative: the key is audited rather than assumed, which is what makes
+these hybrid numbers worth anything.
+
 ## Bugs found so far
 
 **`register_vector` failed before the extension existed.** The store created
@@ -251,10 +322,11 @@ src/lotg/
   ingest/chunk.py     sections.jsonl -> chunks.jsonl, the unit that gets embedded
   retrieval/embedder.py  bge-small-en-v1.5; queries get the instruction prefix
   retrieval/bm25.py      BM25 with IDF, snowball stemming, no stopword list
+  retrieval/reranker.py  bge-reranker-base cross-encoder
   retrieval/store.py     pgvector schema, insert, cosine search
-  retrieval/retrieve.py  dense, BM25 and their RRF fusion behind one interface
+  retrieval/retrieve.py  dense, BM25, RRF fusion and reranking behind one interface
   retrieval/build.py     chunks.jsonl -> pgvector
-  retrieval/search.py    query any of the three from the shell
+  retrieval/search.py    query any of the four from the shell
   gold.py             FAQ rows -> one query per question, gold set of Laws
   evaluate.py         recall@k over those queries -> evals/baseline.json
 data/labels/          the 23 relabelled questions, with a reason each
@@ -275,13 +347,14 @@ make chunk       # -> data/processed/chunks.jsonl
 make test        # parser regressions and corpus integrity
 make db          # Postgres with pgvector
 make index       # embed the chunks into pgvector
-make eval        # recall@k over the 595 questions -> evals/baseline.json
+make eval        # all four retrievers -> evals/baseline.json, about 3.5 minutes
 make search Q="when can a coach be sent off"
-make search R=dense Q="when can a coach be sent off"   # or R=lexical
+make search R=hybrid Q="..."    # or R=dense, R=lexical, to see what reranking changed
 ```
 
-Embeddings run locally through sentence-transformers and BM25 is in-process, so
-there is no API key to set and the eval reproduces on a fresh clone.
+Embeddings, BM25 and the cross-encoder all run locally, so there is no API key to
+set and the eval reproduces on a fresh clone. The two models download once, about
+420 MB together.
 
 ## Roadmap
 
@@ -294,8 +367,10 @@ there is no API key to set and the eval reproduces on a fresh clone.
       reported next to the new one
 - [x] All 595 answers read against their filing, 23 relabelled with a reason
       each, older keys still scored in the same pass
-- [x] Hybrid BM25 and dense fused with RRF, all three scored in one eval run
-- [ ] Reranking, and query expansion for the vocabulary the corpus never uses
+- [x] Hybrid BM25 and dense fused with RRF, every retriever scored in one run
+- [x] Cross-encoder reranking of the top 10, with the depth and the model choice
+      measured rather than assumed
+- [ ] Query expansion for the vocabulary the corpus never uses
 - [ ] FastAPI service, Docker, Azure
 - [ ] Eval in CI, blocking merges on retrieval regression
 
@@ -307,6 +382,13 @@ there is no API key to set and the eval reproduces on a fresh clone.
   the Law. Correct, but it caps citation precision for them.
 - The eval set is lopsided. Law 12 is in 308 of the 595 gold sets, Law 2 in 2.
   Any headline number needs the per-Law breakdown next to it or Law 12 swamps it.
+- Reranking costs about 291 ms a query on Apple Silicon GPU, against roughly 20
+  for hybrid alone. That is the whole latency budget of the service and it is
+  spent before a single token is generated. It also makes `make eval` take three
+  and a half minutes instead of seconds.
+- The cross-encoder runs on whatever device torch picks, and MPS and CPU do not
+  produce bit-identical floats. Near-ties can order differently across machines,
+  so a recall number could move by a question or two on a different box.
 - BM25 runs in process and is rebuilt from `chunks.jsonl` on startup. At 139
   chunks that is free and the arithmetic is mine to test, but it is the piece
   that has to move into the database or a search service before the corpus is

@@ -11,7 +11,10 @@ def build(connection, name: str):
     if name == "dense":
         return dense
     lexical = retrieve.Lexical(chunker.load())
-    return lexical if name == "lexical" else retrieve.Hybrid(dense, lexical)
+    if name == "lexical":
+        return lexical
+    hybrid = retrieve.Hybrid(dense, lexical)
+    return hybrid if name == "hybrid" else retrieve.Reranked(hybrid)
 
 
 def main() -> None:
@@ -19,7 +22,10 @@ def main() -> None:
     parser.add_argument("query", nargs="+")
     parser.add_argument("-k", type=int, default=5, help="how many chunks to return")
     parser.add_argument(
-        "-r", "--retriever", default="hybrid", choices=("hybrid", "dense", "lexical")
+        "-r",
+        "--retriever",
+        default="reranked",
+        choices=("reranked", "hybrid", "dense", "lexical"),
     )
     args = parser.parse_args()
 

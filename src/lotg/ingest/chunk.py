@@ -12,6 +12,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Protocol
 
 PROCESSED = Path("data/processed")
 MAX_CHARS = 2000
@@ -35,8 +36,15 @@ class Chunk:
     url: str
 
 
-def embed_text(chunk: Chunk) -> str:
-    """The breadcrumb, then the body. What both retrievers index."""
+class Passage(Protocol):
+    """A chunk, or a Hit that came back carrying one."""
+
+    breadcrumb: str
+    body: str
+
+
+def embed_text(chunk: Passage) -> str:
+    """The breadcrumb, then the body. What all three retrievers see."""
     return f"{chunk.breadcrumb}\n\n{chunk.body}"
 
 

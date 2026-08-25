@@ -6,8 +6,9 @@ than against the real index.
 
 import pytest
 
-from lotg.retrieval import bm25
+from lotg.retrieval import bm25, retrieve
 from lotg.retrieval.retrieve import fuse
+from lotg.retrieval.store import Hit
 
 DOCUMENTS = [
     "the ball is out of play when it leaves the field",
@@ -84,3 +85,58 @@ def test_fusion_keeps_a_chunk_only_one_ranking_found():
 
 def test_fusion_ties_break_on_id():
     assert [chunk for chunk, _ in fuse([["b", "a"], ["a", "b"]])] == ["a", "b"]
+
+
+def hit(chunk_id: str, law: int) -> Hit:
+    return Hit(chunk_id, law, f"crumb {chunk_id}", f"body {chunk_id}", "url", 0.0)
+
+
+class FakeBase:
+    """Stands in for hybrid, and records how deep it was asked to go."""
+
+    def __init__(self, hits: list[Hit]) -> None:
+        self.hits = hits
+        self.asked_for = None
+
+    def search(self, question: str, vector: list[float], limit: int) -> list[Hit]:
+        self.asked_for = limit
+        return self.hits[:limit]
+
+
+@pytest.fixture
+def reranked(monkeypatch):
+    def fake_score(question, passages, name=None):
+        # "b" is the answer, whatever the base retriever thought.
+        return [1.0 if "body b" in passage else 0.0 for passage in passages]
+
+    monkeypatch.setattr(retrieve.reranker, "score", fake_score)
+    return retrieve.Reranked
+
+
+def test_reranking_promotes_what_the_cross_encoder_prefers(reranked):
+    base = FakeBase([hit("a", 1), hit("b", 2), hit("c", 3)])
+    top = reranked(base).search("q", [], limit=1)
+    assert [h.id for h in top] == ["b"]
+
+
+def test_reranking_reports_the_cross_encoder_score(reranked):
+    base = FakeBase([hit("a", 1), hit("b", 2)])
+    assert reranked(base).search("q", [], limit=1)[0].score == 1.0
+
+
+def test_reranking_only_asks_the_base_for_its_depth(reranked):
+    """The whole cost model: a forward pass per candidate, so depth is the bill."""
+    base = FakeBase([hit(str(i), i) for i in range(50)])
+    reranked(base, depth=10).search("q", [], limit=5)
+    assert base.asked_for == 10
+
+
+def test_reranking_cannot_rescue_a_chunk_below_the_depth(reranked):
+    base = FakeBase([hit("a", 1), hit("c", 3), hit("b", 2)])
+    top = reranked(base, depth=2).search("q", [], limit=2)
+    assert [h.id for h in top] == ["a", "c"], "b was never a candidate"
+
+
+def test_reranking_ties_break_on_id(reranked):
+    base = FakeBase([hit("z", 1), hit("y", 2)])
+    assert [h.id for h in reranked(base).search("q", [], limit=2)] == ["y", "z"]

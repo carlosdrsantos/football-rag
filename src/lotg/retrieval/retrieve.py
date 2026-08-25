@@ -16,11 +16,12 @@ from dataclasses import dataclass, replace
 import psycopg
 
 from lotg.ingest.chunk import Chunk, embed_text
-from lotg.retrieval import bm25, store
+from lotg.retrieval import bm25, reranker, store
 from lotg.retrieval.store import Hit
 
 RRF_K = 60
 DEPTH = 50
+RERANK_DEPTH = 10  # hybrid recall@10 is 98.8%, and deeper buys nothing but latency
 
 
 @dataclass
@@ -65,6 +66,23 @@ class Hybrid:
         found = {hit.id: hit for hits in rankings for hit in hits}
         fused = fuse([[hit.id for hit in hits] for hits in rankings], self.rrf_k)
         return [replace(found[chunk_id], score=score) for chunk_id, score in fused[:limit]]
+
+
+@dataclass
+class Reranked:
+    """A cross-encoder pass over what another retriever found."""
+
+    base: Dense | Lexical | Hybrid
+    depth: int = RERANK_DEPTH
+    name = "reranked"
+
+    def search(self, question: str, vector: list[float], limit: int) -> list[Hit]:
+        candidates = self.base.search(question, vector, self.depth)
+        scores = reranker.score(question, [embed_text(hit) for hit in candidates])
+        ranked = sorted(
+            zip(candidates, scores), key=lambda pair: (-pair[1], pair[0].id)
+        )
+        return [replace(hit, score=score) for hit, score in ranked[:limit]]
 
 
 def fuse(rankings: list[list[str]], rrf_k: int = RRF_K) -> list[tuple[str, float]]:

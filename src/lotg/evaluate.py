@@ -4,7 +4,7 @@ Each question is a refereeing scenario, and recall@k asks whether any chunk from
 a gold Law came back. No LLM judge and nothing to run at eval time but set
 membership over Law numbers.
 
-All three retrievers answer the same questions in one pass, so the columns differ
+Every retriever answers the same questions in one pass, so the columns differ
 only by the retriever. Two baselines sit next to them, because recall@k alone is
 unreadable: always answering from Law 12, and k blind draws, which hit a gold set
 covering n of N chunks with probability 1 - C(N-n, k) / C(N, k).
@@ -26,7 +26,7 @@ from lotg.retrieval import embedder, retrieve, store
 FAQS = Path("data/processed/faqs.jsonl")
 RESULTS = Path("evals")
 KS = (1, 3, 5, 10)
-HEADLINE = "hybrid"
+HEADLINE = "reranked"
 
 Units = list[tuple[int, frozenset[int]]]
 """Each thing being scored: which query it came from, and its gold Laws."""
@@ -119,7 +119,8 @@ def evaluate(limit: int | None = None) -> dict:
 
         dense = retrieve.Dense(connection)
         lexical = retrieve.Lexical(chunks)
-        retrievers = [dense, lexical, retrieve.Hybrid(dense, lexical)]
+        hybrid = retrieve.Hybrid(dense, lexical)
+        retrievers = [dense, lexical, hybrid, retrieve.Reranked(hybrid)]
 
         retrieved = {
             retriever.name: [
