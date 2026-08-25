@@ -10,6 +10,7 @@ dependencies = [
     "sentence-transformers>=3.0",
     "psycopg[binary]>=3.2",
     "pgvector>=0.3",
+    "snowballstemmer>=2.2",
 ]
 
 [project.optional-dependencies]

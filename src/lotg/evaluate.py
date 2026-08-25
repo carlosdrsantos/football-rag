@@ -4,31 +4,32 @@ Each question is a refereeing scenario, and recall@k asks whether any chunk from
 a gold Law came back. No LLM judge and nothing to run at eval time but set
 membership over Law numbers.
 
-Two baselines sit next to it, because recall@k alone is unreadable: always
-answering from Law 12, and k blind draws, which hit a gold set covering n of N
-chunks with probability 1 - C(N-n, k) / C(N, k).
+All three retrievers answer the same questions in one pass, so the columns differ
+only by the retriever. Two baselines sit next to them, because recall@k alone is
+unreadable: always answering from Law 12, and k blind draws, which hit a gold set
+covering n of N chunks with probability 1 - C(N-n, k) / C(N, k).
 
-The two answer keys `gold.py` replaced are scored in the same pass off the same
-retrieved lists, so the gaps between the three columns are the cost of each key
-and nothing else.
+The two answer keys `gold.py` replaced are still scored, so a change to the key
+can never be mistaken for a change to the retriever.
 """
 
 import argparse
 import json
 from collections import Counter, defaultdict
-from collections.abc import Iterable
 from math import comb
 from pathlib import Path
 
 from lotg import gold
-from lotg.retrieval import embedder, store
+from lotg.ingest import chunk as chunker
+from lotg.retrieval import embedder, retrieve, store
 
 FAQS = Path("data/processed/faqs.jsonl")
-CHUNKS = Path("data/processed/chunks.jsonl")
 RESULTS = Path("evals")
 KS = (1, 3, 5, 10)
+HEADLINE = "hybrid"
 
-LawSets = list[frozenset[int]]
+Units = list[tuple[int, frozenset[int]]]
+"""Each thing being scored: which query it came from, and its gold Laws."""
 
 
 def _load(path: Path) -> list[dict]:
@@ -37,121 +38,146 @@ def _load(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.open(encoding="utf-8")]
 
 
-def _random_recall(chunks: list[dict], gold_sets: LawSets, k: int) -> float:
-    """Expected recall@k if k chunks were drawn blind, computed exactly."""
-    total = len(chunks)
-    per_law = Counter(chunk["law_number"] for chunk in chunks)
-
-    hits = 0.0
-    for laws in gold_sets:
-        relevant = sum(per_law[law] for law in laws)
-        misses = comb(total - relevant, k) if total - relevant >= k else 0
-        hits += 1 - misses / comb(total, k)
-    return hits / len(gold_sets)
-
-
-def _majority_recall(gold_sets: LawSets) -> tuple[float, int]:
-    """Recall of always answering from whichever Law appears in the most gold sets."""
-    law, _ = Counter(law for laws in gold_sets for law in laws).most_common(1)[0]
-    return sum(law in laws for laws in gold_sets) / len(gold_sets), law
-
-
-def _scores(chunks: list[dict], gold_sets: LawSets, correct: dict[int, int]) -> dict:
+def _keys(queries: list[gold.Query]) -> dict[str, Units]:
+    """The current answer key, and the two it replaced."""
     return {
-        "queries": len(gold_sets),
-        "recall": {k: correct[k] / len(gold_sets) for k in KS},
-        "baseline_random": {k: _random_recall(chunks, gold_sets, k) for k in KS},
+        "gold": [(i, query.gold) for i, query in enumerate(queries)],
+        "crosslisted": [(i, query.crosslisted) for i, query in enumerate(queries)],
+        "filed": [
+            (i, frozenset([law])) for i, query in enumerate(queries) for law in query.filed
+        ],
     }
 
 
+def _random_recall(chunks: list, units: Units, k: int) -> float:
+    """Expected recall@k if k chunks were drawn blind, computed exactly."""
+    total = len(chunks)
+    per_law = Counter(chunk.law_number for chunk in chunks)
+
+    hits = 0.0
+    for _, laws in units:
+        relevant = sum(per_law[law] for law in laws)
+        misses = comb(total - relevant, k) if total - relevant >= k else 0
+        hits += 1 - misses / comb(total, k)
+    return hits / len(units)
+
+
+def _majority_recall(units: Units) -> tuple[float, int]:
+    """Recall of always answering from whichever Law appears in the most gold sets."""
+    law, _ = Counter(law for _, laws in units for law in laws).most_common(1)[0]
+    return sum(law in laws for _, laws in units) / len(units), law
+
+
+def _recall(units: Units, retrieved: list[list[int]]) -> dict[int, float]:
+    correct = dict.fromkeys(KS, 0)
+    for query_index, laws in units:
+        returned = retrieved[query_index]
+        for k in KS:
+            correct[k] += bool(set(returned[:k]) & laws)
+    return {k: correct[k] / len(units) for k in KS}
+
+
+def _per_law(units: Units, retrieved: list[list[int]], k: int) -> tuple[dict, dict, dict]:
+    """Two different questions per Law, and they diverge a long way.
+
+    "answered" is the headline metric restricted to one Law's traffic. "present"
+    is whether that Law itself surfaced, which is what a citation needs.
+    """
+    total: dict[int, int] = defaultdict(int)
+    answered: dict[int, int] = defaultdict(int)
+    present: dict[int, int] = defaultdict(int)
+
+    for query_index, laws in units:
+        top = set(retrieved[query_index][:k])
+        for law in laws:
+            total[law] += 1
+            answered[law] += bool(top & laws)
+            present[law] += law in top
+
+    order = sorted(total)
+    return (
+        dict(sorted(total.items())),
+        {law: answered[law] / total[law] for law in order},
+        {law: present[law] / total[law] for law in order},
+    )
+
+
 def evaluate(limit: int | None = None) -> dict:
-    chunks = _load(CHUNKS)
+    chunks = chunker.load()
     queries = gold.build(_load(FAQS))
     if limit:
         queries = queries[:limit]
 
     vectors = embedder.encode_queries([query.question for query in queries])
-
     top_k = max(KS)
     detail_k = min(KS)
-    correct_at = {key: dict.fromkeys(KS, 0) for key in ("gold", "crosslisted", "filed")}
-    per_law_total: dict[int, int] = defaultdict(int)
-    per_law_answered: dict[int, int] = defaultdict(int)
-    per_law_present: dict[int, int] = defaultdict(int)
+    keys = _keys(queries)
 
     with store.connect() as connection:
         if store.count(connection) == 0:
             raise RuntimeError("index is empty, run `make index` first")
 
-        for query, vector in zip(queries, vectors):
-            laws = [hit.law_number for hit in store.search(connection, vector, top_k)]
-            for k in KS:
-                returned = set(laws[:k])
-                correct_at["gold"][k] += bool(returned & query.gold)
-                correct_at["crosslisted"][k] += bool(returned & query.crosslisted)
-                correct_at["filed"][k] += sum(law in returned for law in query.filed)
+        dense = retrieve.Dense(connection)
+        lexical = retrieve.Lexical(chunks)
+        retrievers = [dense, lexical, retrieve.Hybrid(dense, lexical)]
 
-            # Two different questions, and they diverge a long way. "answered" is
-            # the headline metric restricted to this Law's traffic. "present" is
-            # whether this Law itself surfaced, which is what citation precision
-            # needs and what the small definitional Laws fail.
-            top = set(laws[:detail_k])
-            for law in query.gold:
-                per_law_total[law] += 1
-                per_law_answered[law] += bool(top & query.gold)
-                per_law_present[law] += law in top
+        retrieved = {
+            retriever.name: [
+                [hit.law_number for hit in retriever.search(query.question, vector, top_k)]
+                for query, vector in zip(queries, vectors)
+            ]
+            for retriever in retrievers
+        }
 
-    gold_sets = [query.gold for query in queries]
-    crosslisted = [query.crosslisted for query in queries]
-    filed = [frozenset([law]) for query in queries for law in query.filed]
-    majority, majority_law = _majority_recall(gold_sets)
+    results = {}
+    for name, laws in retrieved.items():
+        counts, answered, present = _per_law(keys["gold"], laws, detail_k)
+        results[name] = {
+            "recall": _recall(keys["gold"], laws),
+            "recall_under_older_keys": {
+                key: _recall(units, laws) for key, units in keys.items() if key != "gold"
+            },
+            "per_law_answered_at_detail_k": answered,
+            "per_law_present_at_detail_k": present,
+        }
+
+    majority, majority_law = _majority_recall(keys["gold"])
     return {
         "model": embedder.MODEL_NAME,
         "dimensions": embedder.dimensions(),
         "chunks": len(chunks),
-        "cross_listed_queries": sum(len(laws) > 1 for laws in crosslisted),
+        "queries": len(queries),
+        "cross_listed_queries": sum(len(q.crosslisted) > 1 for q in queries),
         "relabelled_queries": sum(q.gold != q.crosslisted for q in queries),
-        **_scores(chunks, gold_sets, correct_at["gold"]),
-        "key_before_relabelling": _scores(chunks, crosslisted, correct_at["crosslisted"]),
-        "key_before_collapsing": _scores(chunks, filed, correct_at["filed"]),
+        "rrf_k": retrieve.RRF_K,
+        "fusion_depth": retrieve.DEPTH,
+        "headline": HEADLINE,
+        "retrievers": results,
+        "per_law_queries": counts,
+        "baseline_random": {k: _random_recall(chunks, keys["gold"], k) for k in KS},
         "baseline_majority_law": {"law": majority_law, "recall@any": majority},
         "detail_k": detail_k,
-        "per_law_answered_at_detail_k": {
-            law: per_law_answered[law] / total for law, total in sorted(per_law_total.items())
-        },
-        "per_law_present_at_detail_k": {
-            law: per_law_present[law] / total for law, total in sorted(per_law_total.items())
-        },
-        "per_law_queries": dict(sorted(per_law_total.items())),
     }
 
 
-def _table(scores: dict) -> Iterable[str]:
-    yield f"{'k':>3}  {'recall':>7}  {'random':>7}  {'lift':>6}"
-    for k in KS:
-        got = scores["recall"][k]
-        rand = scores["baseline_random"][k]
-        yield f"{k:>3}  {got:>6.1%}  {rand:>6.1%}  {got / rand:>5.1f}x"
-
-
 def report(result: dict) -> None:
+    names = list(result["retrievers"])
     print(f"model    {result['model']} ({result['dimensions']}d)")
     print(f"corpus   {result['chunks']} chunks")
     print(
         f"queries  {result['queries']} distinct questions, "
         f"{result['cross_listed_queries']} cross-listed, "
-        f"{result['relabelled_queries']} relabelled\n"
+        f"{result['relabelled_queries']} relabelled"
     )
+    print(f"fusion   RRF k={result['rrf_k']} over {result['fusion_depth']} candidates each\n")
 
-    print("\n".join(_table(result)))
-
-    older = [
-        ("IFAB's cross-listing, no relabelling", result["key_before_relabelling"]),
-        ("one Law per FAQ row, no collapsing", result["key_before_collapsing"]),
-    ]
-    for label, scores in older:
-        print(f"\nunder {label} ({scores['queries']} queries):")
-        print("\n".join(f"  {line}" for line in _table(scores)))
+    head = "".join(f"{name:>9}" for name in names)
+    print(f"{'k':>3}{head}{'random':>9}{'lift':>7}")
+    for k in KS:
+        row = "".join(f"{result['retrievers'][n]['recall'][k]:>8.1%} " for n in names)
+        rand = result["baseline_random"][k]
+        best = result["retrievers"][result["headline"]]["recall"][k]
+        print(f"{k:>3}{row}{rand:>8.1%} {best / rand:>5.1f}x")
 
     majority = result["baseline_majority_law"]
     print(
@@ -159,14 +185,21 @@ def report(result: dict) -> None:
         f"{majority['recall@any']:.1%} at any k"
     )
 
+    older = result["retrievers"][result["headline"]]["recall_under_older_keys"]
+    print(f"\n{result['headline']} under the answer keys this one replaced:")
+    for key, recall in older.items():
+        scores = "  ".join(f"@{k} {recall[k]:.1%}" for k in KS)
+        print(f"  {key:>12}  {scores}")
+
     k = result["detail_k"]
-    print("\nby Law, over the questions with that Law in the gold set:")
-    print(f"  {'Law':>6} {'n':>4}  {f'answered@{k}':>11}  {f'Law shown@{k}':>13}")
-    for law, answered in result["per_law_answered_at_detail_k"].items():
-        n = result["per_law_queries"][law]
-        present = result["per_law_present_at_detail_k"][law]
-        bar = "#" * round(present * 20)
-        print(f"  Law {law:>2} {n:>4}  {answered:>10.1%}  {present:>12.1%}  {bar}")
+    print(f"\nquestions answered@{k}, by Law in the gold set:")
+    print(f"  {'Law':>6} {'n':>4}{head}")
+    for law, n in result["per_law_queries"].items():
+        row = "".join(
+            f"{result['retrievers'][name]['per_law_answered_at_detail_k'][law]:>8.1%} "
+            for name in names
+        )
+        print(f"  Law {law:>2} {n:>4}{row}")
 
 
 def main() -> None:

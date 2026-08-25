@@ -24,7 +24,7 @@ index:
 	$(PY) -m lotg.retrieval.build
 
 search:
-	$(PY) -m lotg.retrieval.search $(Q)
+	$(PY) -m lotg.retrieval.search $(if $(R),-r $(R),) $(Q)
 
 eval:
 	$(PY) -m lotg.evaluate

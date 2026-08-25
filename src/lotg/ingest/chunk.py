@@ -36,8 +36,14 @@ class Chunk:
 
 
 def embed_text(chunk: Chunk) -> str:
-    """The breadcrumb, then the body."""
+    """The breadcrumb, then the body. What both retrievers index."""
     return f"{chunk.breadcrumb}\n\n{chunk.body}"
+
+
+def load(path: Path = PROCESSED / "chunks.jsonl") -> list[Chunk]:
+    if not path.exists():
+        raise FileNotFoundError(f"{path} missing, run `make chunk` first")
+    return [Chunk(**json.loads(line)) for line in path.open(encoding="utf-8")]
 
 
 def _slug(text: str) -> str:

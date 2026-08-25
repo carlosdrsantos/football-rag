@@ -1,19 +1,12 @@
 """Embed chunks.jsonl and load it into pgvector."""
 
-import json
-from pathlib import Path
-
-from lotg.ingest.chunk import Chunk, embed_text
+from lotg.ingest import chunk as chunker
+from lotg.ingest.chunk import embed_text
 from lotg.retrieval import embedder, store
-
-CHUNKS = Path("data/processed/chunks.jsonl")
 
 
 def main() -> None:
-    if not CHUNKS.exists():
-        raise FileNotFoundError(f"{CHUNKS} missing, run `make chunk` first")
-
-    chunks = [Chunk(**json.loads(line)) for line in CHUNKS.open(encoding="utf-8")]
+    chunks = chunker.load()
     print(f"embedding {len(chunks)} chunks with {embedder.MODEL_NAME}")
     vectors = embedder.encode_documents([embed_text(c) for c in chunks])
 

@@ -9,14 +9,14 @@ missing answer but a confident one citing the wrong clause.
 
 ## Status
 
-Ingestion, chunking, dense retrieval and the eval harness work. Serving is next.
+Ingestion, chunking, hybrid retrieval and the eval harness work. Serving is next.
 
 ```
 corpus      87 sections -> 139 chunks, 104,803 chars, all 17 Laws
 chunks      median 642 chars, max 2,057, none over the 2,000 cap
 amended     19 sections changed this edition, 22 repealed passages dropped
 eval set    789 official IFAB Q&A rows, 595 distinct questions after collapsing
-retrieval   recall@1 63.7%, @5 92.9%, @10 97.5%  (bge-small-en-v1.5, 384d, pgvector)
+retrieval   recall@1 69.1%, @5 94.5%, @10 98.8%  (BM25 + bge-small-en-v1.5, RRF)
 ```
 
 ## The corpus is the Laws, the eval set is IFAB's Q&A
@@ -24,9 +24,8 @@ retrieval   recall@1 63.7%, @5 92.9%, @10 97.5%  (bge-small-en-v1.5, 384d, pgvec
 Every Law page ships official question-and-answer pairs, each one a realistic
 refereeing scenario with the authoritative ruling. There are 789 of them, 595
 once the cross-listings collapse. That is an eval set written by the people who
-write the rules, phrased the way
-referees actually ask, against the 30-odd hand-written questions a project like
-this usually gets.
+write the rules, phrased the way referees actually ask, against the 30-odd
+hand-written questions a project like this usually gets.
 
 It is worth nothing if the answers are in the index. A question would retrieve
 its own answer, every metric would sit at the ceiling, and none of them would
@@ -113,36 +112,62 @@ silence.
 All three keys are scored in the same pass off the same retrieved lists, so
 nothing but the key differs between the columns.
 
-## The baseline
+## Two retrievers, fused on rank
 
-Dense retrieval only: one embedding model, cosine distance over pgvector, no
-hybrid search and no reranking. Measured first so later changes have something
-to move.
+Dense retrieval was measured first, alone, so the hybrid had something to beat.
 
-| k | recall | random | lift | cross-listing only | one Law per row |
+The dense model loses on rare terms, which is most of what separates the small
+Laws. So the second retriever is BM25, and specifically BM25 rather than Postgres
+full-text search: `ts_rank` and `ts_rank_cd` weight term frequency and coverage
+but carry **no IDF at all**, and IDF is the entire reason for adding a lexical
+leg. "Defective ball" has to outweigh "player" and only IDF does that. It is
+about 60 lines over 139 chunks, stemmed with snowball, no stopword list because
+a term in every chunk already earns an IDF of nearly zero.
+
+Cosine similarity and a BM25 score have nothing to say to each other, so the two
+are fused on **rank**, not score. Reciprocal rank fusion gives a chunk
+1 / (60 + rank) from each list it appears in and sums.
+
+| k | dense | BM25 | hybrid | random | lift |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 63.7% | 14.0% | 4.6x | 62.5% | 47.3% |
-| 3 | 84.4% | 34.7% | 2.4x | 83.2% | 67.6% |
-| 5 | 92.9% | 48.7% | 1.9x | 92.1% | 78.7% |
-| 10 | 97.5% | 68.4% | 1.4x | 97.1% | 89.7% |
+| 1 | 63.7% | 66.6% | **69.1%** | 14.0% | 4.9x |
+| 3 | 84.4% | 86.6% | **89.7%** | 34.7% | 2.6x |
+| 5 | 92.9% | 92.6% | **94.5%** | 48.7% | 1.9x |
+| 10 | 97.5% | 98.0% | **98.8%** | 68.4% | 1.4x |
+
+This time the lift moved too, 4.6x to 4.9x at k=1. The answer key did not change,
+so unlike the last two rounds the retriever genuinely got better.
+
+BM25 alone beating the embedding model at k=1 was not what I expected. A 384-dim
+model on a rulebook full of exact terms of art is not obviously the stronger leg,
+and on this corpus it is not.
+
+**RRF k was not tuned.** Sweeping it over 10, 20, 60 and 120, against candidate
+depths of 10 through 100, moves recall@1 between 68.4% and 69.2%. There is
+nothing there to fit, so it keeps the value from the paper. Indexing the
+breadcrumb alongside the body is worth having though: BM25 scores 66.6% on
+breadcrumb plus body against 65.2% on body alone.
+
+The older answer keys are still scored every run, so a change to the key can
+never be mistaken for a change to the retriever. Hybrid scores 68.2% at k=1 under
+IFAB's raw cross-listing and 51.6% under one-Law-per-row.
 
 The random column is computed exactly, not sampled: for a gold set covering n of
 the N chunks, k blind draws miss all of it with probability C(N-n, k) / C(N, k).
 There is a second baseline worth knowing too. Law 12 is in 308 of the 595 gold
 sets, so a system that always answered from Law 12 scores 51.8%.
 
-**Fixing the key moved recall 16 points and moved the lift by nothing.** A gold
-set of three Laws is a wider target for a blind draw as well, and the random
-column absorbs the whole gain. The retriever did not get better, the question
-got easier, and the only column that noticed is the one that is supposed to. Any
-single number here is worthless without it.
+That column earned its place on the two rounds before this one. Fixing the answer
+key moved dense recall@1 from 47.3% to 63.7% and moved the lift by nothing: a
+gold set of three Laws is a wider target for a blind draw too, and the random
+column absorbed the whole gain. The retriever had not improved, the question had
+got easier, and the lift is what said so.
 
-The second thing that column says is that reading all 595 answers by hand was
-worth 1.2 points. IFAB's own cross-listing was doing almost all the work, and
-the 23 overrides mostly confirmed the filing rather than corrected it. That is
-not the result I expected going in, and it is the useful kind of negative:
-the answer key is now audited rather than assumed, which is what makes the
-hybrid numbers coming next worth comparing to these.
+Reading all 595 answers by hand was worth 1.2 of those points. IFAB's own
+cross-listing was doing almost all the work and the 23 overrides mostly confirmed
+the filing rather than corrected it. Not the result I expected, and the useful
+kind of negative: the key is audited rather than assumed, which is what makes
+these hybrid numbers worth anything.
 
 ## The per-Law table was asking the wrong question
 
@@ -153,28 +178,43 @@ and they come apart a long way:
 
 | Law | n | answered@1 | Law shown@1 |
 |---:|---:|---:|---:|
-| 5 | 76 | 73.7% | 26.3% |
-| 6 | 7 | 71.4% | 14.3% |
-| 9 | 19 | 42.1% | 5.3% |
-| 14 | 73 | 71.2% | 43.8% |
-| 16 | 20 | 30.0% | 10.0% |
+| 5 | 76 | 80.3% | 34.2% |
+| 6 | 7 | 85.7% | 28.6% |
+| 9 | 19 | 47.4% | 10.5% |
+| 14 | 73 | 74.0% | 41.1% |
+| 16 | 20 | 35.0% | 10.0% |
 | 2 | 2 | 0.0% | 0.0% |
 
 Law 9 defines when the ball is in and out of play, 977 chars in two chunks. Its
 questions ask what happens when the ball hits the referee, and IFAB's own answer
 is "dropped ball", which is Law 8.2. Retrieval returns Law 8.2, which is right,
-and Law 9 never surfaces. 42% of those questions are answered, not 5%.
+and Law 9 never surfaces. 47% of those questions are answered, not 10%.
 
 Both columns are worth keeping, because they fail for different reasons and only
 one of them is a retrieval problem. `answered` is the headline metric restricted
 to one Law's traffic. `Law shown` is what citation precision needs, and a Law
 that never surfaces cannot be cited even when the answer is correct.
 
-What survives as a genuine weakness is the small procedural Laws. Law 16 answers
-30% of its questions and Law 2 answers neither of its two. Both are three chunks
-and about 2,000 chars, against Law 12's 25 chunks and 22,238, and they lose on
-vocabulary the dense model cannot match. That is the case for hybrid search, and
-it is now measured against a key I have read rather than one I assumed.
+## What hybrid cost, and the one it could not fix
+
+It is a net win, not a uniform one. Law 12 goes 55.8% to 66.6% answered@1 and
+Law 6 goes 71.4% to 85.7%, but Law 8 drops 72.2% to 59.3% and Law 3 drops 76.0%
+to 72.0%. BM25 is much weaker on those two (51.9% and 54.0%) and RRF weights both
+legs equally, so the weaker one drags. Weighting the fusion would recover it and
+would also be a knob fitted to these 595 questions, which is why it has not been
+touched.
+
+Law 2 still answers neither of its two questions, and no retriever will fix it.
+Both are phrased "the ball bursts". **The word "burst" does not appear once in
+the corpus.** The Laws say "defective":
+
+> If the ball becomes defective: play is stopped and restarted with a dropped ball
+
+Ask the same question in the rulebook's own words and hybrid returns Law 2.2 at
+rank 1. That gap is not a ranking problem and more retrieval tuning cannot close
+it, which makes it the argument for query expansion or a reranker rather than for
+another retriever. Two questions is also not enough to conclude anything, so it
+is written down as an observation, not a result.
 
 ## Bugs found so far
 
@@ -210,9 +250,11 @@ src/lotg/
   ingest/parse.py     HTML -> sections.jsonl (corpus) + faqs.jsonl (eval set)
   ingest/chunk.py     sections.jsonl -> chunks.jsonl, the unit that gets embedded
   retrieval/embedder.py  bge-small-en-v1.5; queries get the instruction prefix
+  retrieval/bm25.py      BM25 with IDF, snowball stemming, no stopword list
   retrieval/store.py     pgvector schema, insert, cosine search
+  retrieval/retrieve.py  dense, BM25 and their RRF fusion behind one interface
   retrieval/build.py     chunks.jsonl -> pgvector
-  retrieval/search.py    query it from the shell
+  retrieval/search.py    query any of the three from the shell
   gold.py             FAQ rows -> one query per question, gold set of Laws
   evaluate.py         recall@k over those queries -> evals/baseline.json
 data/labels/          the 23 relabelled questions, with a reason each
@@ -235,23 +277,25 @@ make db          # Postgres with pgvector
 make index       # embed the chunks into pgvector
 make eval        # recall@k over the 595 questions -> evals/baseline.json
 make search Q="when can a coach be sent off"
+make search R=dense Q="when can a coach be sent off"   # or R=lexical
 ```
 
-Embeddings run locally through sentence-transformers, so there is no API key to
-set and the eval reproduces on a fresh clone.
+Embeddings run locally through sentence-transformers and BM25 is in-process, so
+there is no API key to set and the eval reproduces on a fresh clone.
 
 ## Roadmap
 
 - [x] Ingestion, corpus and eval set kept apart
 - [x] Chunking on `<h3>` boundaries with breadcrumbs, no text lost
-- [x] Baseline dense retrieval on pgvector, measured against exact random and
+- [x] Dense retrieval on pgvector, measured against exact random and
       majority-Law baselines
 - [x] Eval harness. Recall@k over the FAQs, no LLM judge involved
 - [x] Multi-Law gold sets from IFAB's own cross-listing, with the old key still
       reported next to the new one
 - [x] All 595 answers read against their filing, 23 relabelled with a reason
       each, older keys still scored in the same pass
-- [ ] Hybrid BM25 and dense, then reranking, re-running the eval on each change
+- [x] Hybrid BM25 and dense fused with RRF, all three scored in one eval run
+- [ ] Reranking, and query expansion for the vocabulary the corpus never uses
 - [ ] FastAPI service, Docker, Azure
 - [ ] Eval in CI, blocking merges on retrieval regression
 
@@ -263,6 +307,13 @@ set and the eval reproduces on a fresh clone.
   the Law. Correct, but it caps citation precision for them.
 - The eval set is lopsided. Law 12 is in 308 of the 595 gold sets, Law 2 in 2.
   Any headline number needs the per-Law breakdown next to it or Law 12 swamps it.
+- BM25 runs in process and is rebuilt from `chunks.jsonl` on startup. At 139
+  chunks that is free and the arithmetic is mine to test, but it is the piece
+  that has to move into the database or a search service before the corpus is
+  large enough to matter.
+- Fusion weights both retrievers equally. Law 8 and Law 3 would be better served
+  by leaning on the dense leg, but tuning that against these same 595 questions
+  is how you end up reporting a number that only holds on your own eval set.
 - The 23 relabels are one person's reading of one official answer each. The
   reasons are committed so they can be argued with, but nobody has second-read
   them, and two questions is not enough to say anything about Law 2.

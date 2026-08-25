@@ -6,55 +6,71 @@ data is absent, so the suite still runs on a clean checkout.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from lotg import gold
-from lotg.evaluate import _majority_recall, _random_recall
+from lotg.evaluate import _majority_recall, _random_recall, _recall
 from lotg.ingest.chunk import Chunk
 
-CHUNKS = [{"law_number": 1}] * 10 + [{"law_number": 2}] * 90  # 100 chunks, 10 in Law 1
+CHUNKS = [SimpleNamespace(law_number=1)] * 10 + [SimpleNamespace(law_number=2)] * 90
 PROCESSED = Path("data/processed")
 
 
-def law_sets(*laws: int | tuple[int, ...]) -> list[frozenset[int]]:
-    return [frozenset(law if isinstance(law, tuple) else (law,)) for law in laws]
+def units(*laws: int | tuple[int, ...]) -> list[tuple[int, frozenset[int]]]:
+    """One scored unit per gold set, each pointing at its own query."""
+    return [
+        (i, frozenset(law if isinstance(law, tuple) else (law,))) for i, law in enumerate(laws)
+    ]
 
 
 def test_random_recall_at_1_is_the_law_share():
-    assert _random_recall(CHUNKS, law_sets(1), 1) == pytest.approx(0.10)
-    assert _random_recall(CHUNKS, law_sets(2), 1) == pytest.approx(0.90)
+    assert _random_recall(CHUNKS, units(1), 1) == pytest.approx(0.10)
+    assert _random_recall(CHUNKS, units(2), 1) == pytest.approx(0.90)
 
 
 def test_random_recall_counts_every_law_in_the_gold_set():
     # A blind draw hits {1, 2} always, because between them they are the corpus.
-    assert _random_recall(CHUNKS, law_sets((1, 2)), 1) == pytest.approx(1.0)
+    assert _random_recall(CHUNKS, units((1, 2)), 1) == pytest.approx(1.0)
 
 
 def test_random_recall_rises_with_k():
-    scores = [_random_recall(CHUNKS, law_sets(1), k) for k in (1, 3, 5, 10)]
+    scores = [_random_recall(CHUNKS, units(1), k) for k in (1, 3, 5, 10)]
     assert scores == sorted(scores)
     assert all(0 < s < 1 for s in scores)
 
 
 def test_random_recall_is_certain_when_k_covers_the_corpus():
-    assert _random_recall(CHUNKS, law_sets(1), len(CHUNKS)) == pytest.approx(1.0)
+    assert _random_recall(CHUNKS, units(1), len(CHUNKS)) == pytest.approx(1.0)
 
 
 def test_random_recall_averages_over_queries():
-    assert _random_recall(CHUNKS, law_sets(1, 2), 1) == pytest.approx(0.50)
+    assert _random_recall(CHUNKS, units(1, 2), 1) == pytest.approx(0.50)
 
 
 def test_majority_recall_picks_the_commonest_law():
-    recall, law = _majority_recall(law_sets(12, 12, 12, 5))
+    recall, law = _majority_recall(units(12, 12, 12, 5))
     assert law == 12
     assert recall == pytest.approx(0.75)
 
 
 def test_majority_recall_credits_a_gold_set_containing_that_law():
-    recall, law = _majority_recall(law_sets(12, (5, 12), 5))
+    recall, law = _majority_recall(units(12, (5, 12), 5))
     assert law == 12
     assert recall == pytest.approx(2 / 3)
+
+
+def test_recall_counts_a_query_once_however_many_gold_laws_it_hits():
+    retrieved = [[12, 5]]
+    assert _recall([(0, frozenset({5, 12}))], retrieved) == {1: 1.0, 3: 1.0, 5: 1.0, 10: 1.0}
+    assert _recall([(0, frozenset({9}))], retrieved) == {1: 0.0, 3: 0.0, 5: 0.0, 10: 0.0}
+
+
+def test_recall_at_k_only_looks_at_the_first_k():
+    assert _recall([(0, frozenset({9}))], [[1, 2, 3, 9]], )[1] == 0.0
+    assert _recall([(0, frozenset({9}))], [[1, 2, 3, 9]], )[3] == 0.0
+    assert _recall([(0, frozenset({9}))], [[1, 2, 3, 9]], )[5] == 1.0
 
 
 FAQ_ROWS = [
