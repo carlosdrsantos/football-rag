@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: install fetch parse chunk db index search eval lint test clean
+.PHONY: install fetch parse chunk db index search serve eval eval-answers lint test clean
 
 install:
 	python3 -m venv .venv
@@ -26,8 +26,14 @@ index:
 search:
 	$(PY) -m lotg.retrieval.search $(if $(R),-r $(R),) $(Q)
 
+serve:
+	.venv/bin/uvicorn lotg.service.app:app --host 0.0.0.0 --port 8000
+
 eval:
 	$(PY) -m lotg.evaluate
+
+eval-answers:
+	$(PY) -m lotg.evaluate_answers $(ARGS)
 
 lint:
 	.venv/bin/ruff check src tests

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import psycopg
 from pgvector.psycopg import register_vector
+from psycopg_pool import ConnectionPool
 
 from lotg.ingest.chunk import Chunk
 
@@ -42,13 +43,24 @@ class Hit:
     score: float
 
 
+def _ensure_extension() -> None:
+    """register_vector looks the type up by OID, so the extension must exist first."""
+    with psycopg.connect(DSN) as connection:
+        connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        connection.commit()
+
+
 def connect() -> psycopg.Connection:
+    _ensure_extension()
     connection = psycopg.connect(DSN)
-    # register_vector looks the type up by OID, so the extension has to exist first.
-    connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    connection.commit()
     register_vector(connection)
     return connection
+
+
+def pool(max_size: int = 4) -> ConnectionPool:
+    """For the service, where a connection per request beats one held forever."""
+    _ensure_extension()
+    return ConnectionPool(DSN, min_size=1, max_size=max_size, configure=register_vector)
 
 
 def create_schema(connection: psycopg.Connection, dims: int) -> None:

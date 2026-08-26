@@ -9,8 +9,9 @@ missing answer but a confident one citing the wrong clause.
 
 ## Status
 
-Ingestion, chunking, reranked hybrid retrieval and the eval harness work.
-Serving is next.
+Ingestion, chunking, reranked hybrid retrieval, an eval harness and an HTTP
+service. `/search` needs no API key. `/ask` generates a cited ruling and needs
+one.
 
 ```
 corpus      87 sections -> 139 chunks, 104,803 chars, all 17 Laws
@@ -287,6 +288,69 @@ the filing rather than corrected it. Not the result I expected, and the useful
 kind of negative: the key is audited rather than assumed, which is what makes
 these hybrid numbers worth anything.
 
+## The service
+
+Two endpoints, split by what they need.
+
+`POST /search` is the retrieval stack over HTTP and needs no API key. `POST /ask`
+puts a model on top and returns a ruling whose every claim carries a clause
+citation. `GET /health` reports whether the index has anything in it and which
+models are loaded, including a null generator when no key is set.
+
+Both models and the BM25 index load once at startup. Steady-state `/search` is
+about 340 ms end to end, of which roughly 290 is the cross-encoder. The first
+request after boot is 8.3 s, because MPS compiles its graph on the first real
+forward pass and warming the model object is not enough to trigger it. The
+Dockerfile bakes both models into the image rather than pulling 420 MB during a
+deploy.
+
+**The model cites by position, not by clause number.** It sees `[1]` to `[5]` and
+returns the numbers it used, which are mapped back to real chunks in
+`cited_hits`. Asking it to reproduce `law-12-12.4#sending-off` invites a citation
+that looks right and points nowhere, and a wrong integer is something code can
+catch. Positions outside the range are dropped rather than rendered, and the
+tests cover 0, -1 and 9 against a list of 3.
+
+It also gets an explicit way out. `sufficient: false` says the clauses do not
+decide the question, which is the honest answer often enough that not offering it
+would guarantee invention.
+
+Without a key `/ask` returns 503 with a reason rather than a 500:
+
+```
+$ curl -s -X POST localhost:8000/ask -d '{"question":"when can a coach be sent off"}'
+{"detail":"ANTHROPIC_API_KEY is not set, so /ask cannot answer"}
+```
+
+## Measuring answers without wrecking the retrieval numbers
+
+`evaluate_answers.py` is a separate file writing to a separate output, because it
+breaks the two properties `make eval` depends on: it costs money and it is not
+deterministic. Folding them together would quietly cost the retrieval numbers the
+thing that makes them worth trusting.
+
+Most of it still needs no judge. Whether the service abstained, whether it cited a
+clause it was never shown, and whether the clause it cited belongs to a gold Law
+are all set membership against labels that already exist. Only agreement with
+IFAB's ruling needs a model, and that model is asked to compare two answers, never
+to grade retrieval.
+
+Two distinctions the metrics keep apart:
+
+- **Abstaining with the answer in hand.** Refusing when nothing useful was
+  retrieved is correct. Refusing when the gold Law was sitting in the prompt is
+  a failure, and only the second is worth fixing.
+- **Cited a gold Law** against **cited only gold Laws.** The first says the answer
+  is grounded. The second says nothing extra was dragged in, and it is the
+  stricter one.
+
+The sample is every 6th question, roughly 100 of the 595, spread across all 17
+Laws by the file order. Deterministic rather than random, so two runs measure the
+same questions and can be compared.
+
+**This has not been run yet.** It needs a key, and no numbers are reported here
+until it has been.
+
 ## Bugs found so far
 
 **`register_vector` failed before the extension existed.** The store created
@@ -327,6 +391,9 @@ src/lotg/
   retrieval/retrieve.py  dense, BM25, RRF fusion and reranking behind one interface
   retrieval/build.py     chunks.jsonl -> pgvector
   retrieval/search.py    query any of the four from the shell
+  service/app.py      FastAPI: /health, /search, /ask
+  service/answer.py   the prompt, and the mapping from [n] back to a clause
+evaluate_answers.py   citation and agreement eval -> evals/answers.json
   gold.py             FAQ rows -> one query per question, gold set of Laws
   evaluate.py         recall@k over those queries -> evals/baseline.json
 data/labels/          the 23 relabelled questions, with a reason each
@@ -348,13 +415,16 @@ make test        # parser regressions and corpus integrity
 make db          # Postgres with pgvector
 make index       # embed the chunks into pgvector
 make eval        # all four retrievers -> evals/baseline.json, about 3.5 minutes
+make serve       # http://localhost:8000/docs
+make eval-answers  # needs ANTHROPIC_API_KEY, costs a couple of dollars a run
 make search Q="when can a coach be sent off"
 make search R=hybrid Q="..."    # or R=dense, R=lexical, to see what reranking changed
 ```
 
-Embeddings, BM25 and the cross-encoder all run locally, so there is no API key to
-set and the eval reproduces on a fresh clone. The two models download once, about
-420 MB together.
+Embeddings, BM25 and the cross-encoder all run locally, so retrieval, `/search`
+and `make eval` need no API key and reproduce on a fresh clone. The two models
+download once, about 420 MB together. Only `/ask` and `make eval-answers` call
+out to Anthropic.
 
 ## Roadmap
 
@@ -370,9 +440,13 @@ set and the eval reproduces on a fresh clone. The two models download once, abou
 - [x] Hybrid BM25 and dense fused with RRF, every retriever scored in one run
 - [x] Cross-encoder reranking of the top 10, with the depth and the model choice
       measured rather than assumed
-- [ ] Query expansion for the vocabulary the corpus never uses
-- [ ] FastAPI service, Docker, Azure
+- [x] FastAPI service and a Dockerfile, models baked into the image
+- [x] Answer generation with citations, an abstention path, and an eval that
+      keeps the LLM judge away from the retrieval numbers
+- [ ] Run the generation eval and act on what it says
 - [ ] Eval in CI, blocking merges on retrieval regression
+- [ ] Deploy to Azure
+- [ ] Query expansion, if the vocabulary gap ever shows up in more than 2 questions
 
 ## Known gaps
 
@@ -382,6 +456,11 @@ set and the eval reproduces on a fresh clone. The two models download once, abou
   the Law. Correct, but it caps citation precision for them.
 - The eval set is lopsided. Law 12 is in 308 of the 595 gold sets, Law 2 in 2.
   Any headline number needs the per-Law breakdown next to it or Law 12 swamps it.
+- The generation half is unmeasured. Every claim about citation quality and
+  abstention is a design intention until `make eval-answers` has been run once.
+- Nothing rate-limits or authenticates `/ask`, so anyone who can reach the
+  service can spend the key behind it. That is fine on localhost and is the
+  first thing to fix before it is reachable from anywhere else.
 - Reranking costs about 291 ms a query on Apple Silicon GPU, against roughly 20
   for hybrid alone. That is the whole latency budget of the service and it is
   spent before a single token is generated. It also makes `make eval` take three
