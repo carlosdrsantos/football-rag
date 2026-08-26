@@ -171,6 +171,10 @@ def _score(rows: list[dict]) -> dict:
     wrongly_abstained = [
         row for row in abstained if set(row["retrieved_laws"]) & set(row["gold_laws"])
     ]
+    # Claiming the clauses do not decide it and then reaching IFAB's ruling anyway.
+    # The first run did this twice in six, which is how the broken abstention
+    # contract was found: the flag was being used as a hedge, not a refusal.
+    incoherent = [row for row in abstained if row["agrees"]]
     grounded = [row for row in answered if set(row["cited_laws"]) & set(row["gold_laws"])]
     clean = [row for row in answered if set(row["cited_laws"]) <= set(row["gold_laws"])]
 
@@ -179,6 +183,7 @@ def _score(rows: list[dict]) -> dict:
         "answered": len(answered) / total,
         "abstained": len(abstained) / total,
         "abstained_with_the_answer_in_hand": len(wrongly_abstained) / total,
+        "abstained_but_ruled_correctly": len(incoherent) / total,
         "cited_a_gold_law": len(grounded) / len(answered) if answered else 0.0,
         "cited_only_gold_laws": len(clean) / len(answered) if answered else 0.0,
         "agrees_with_ifab": sum(row["agrees"] for row in rows) / total,
@@ -201,6 +206,7 @@ def report(result: dict) -> None:
     print(f"  answered                  {result['answered']:.1%}")
     print(f"  abstained                 {result['abstained']:.1%}")
     print(f"    of which had the Law    {result['abstained_with_the_answer_in_hand']:.1%}")
+    print(f"    but ruled anyway, right {result['abstained_but_ruled_correctly']:.1%}")
     print(f"  cited a gold Law          {result['cited_a_gold_law']:.1%}")
     print(f"  cited only gold Laws      {result['cited_only_gold_laws']:.1%}")
     print(f"  answered with no citation {result['uncited_answers']}")

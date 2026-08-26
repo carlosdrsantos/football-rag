@@ -76,6 +76,19 @@ ROWS = [
 ]
 
 
+def test_abstaining_and_still_reaching_the_right_ruling_is_counted():
+    """A refusal that rules anyway hides a real failure behind a hedge."""
+    from lotg.evaluate_answers import _score
+
+    rows = [
+        {"sufficient": False, "cited_laws": [], "gold_laws": [3], "retrieved_laws": [3],
+         "cited": [], "agrees": True},
+        {"sufficient": False, "cited_laws": [], "gold_laws": [3], "retrieved_laws": [3],
+         "cited": [], "agrees": False},
+    ]
+    assert _score(rows)["abstained_but_ruled_correctly"] == pytest.approx(0.5)
+
+
 def test_scoring_separates_the_two_kinds_of_abstention():
     from lotg.evaluate_answers import _score
 

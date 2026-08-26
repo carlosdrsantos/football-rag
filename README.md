@@ -335,14 +335,37 @@ are all set membership against labels that already exist. Only agreement with
 IFAB's ruling needs a model, and that model is asked to compare two answers, never
 to grade retrieval.
 
-Two distinctions the metrics keep apart:
+Three distinctions the metrics keep apart:
 
 - **Abstaining with the answer in hand.** Refusing when nothing useful was
   retrieved is correct. Refusing when the gold Law was sitting in the prompt is
   a failure, and only the second is worth fixing.
+- **Abstaining and ruling anyway.** Claiming the clauses do not decide it, then
+  giving IFAB's ruling regardless. This is the worst of the three, because it
+  looks like caution and is actually a hedge.
 - **Cited a gold Law** against **cited only gold Laws.** The first says the answer
   is grounded. The second says nothing extra was dragged in, and it is the
   stricter one.
+
+## The first run found a bug in the prompt, not the model
+
+Six questions on Haiku 4.5, run purely to check the wiring. Citation grounding
+came back clean: every cited clause was in a gold Law, nothing was cited that had
+not been retrieved, no answer went uncited. The by-position scheme did its job.
+
+The abstention flag did not. Two of the six came back `sufficient: false` and
+then gave a full, confident ruling anyway, and one of those two was judged to
+*agree with IFAB*. The model was reading `sufficient` as a confidence dial rather
+than a refusal switch, which made the field meaningless to a caller and made the
+"abstained" metric measure something that was not abstention.
+
+That is a contract I wrote badly, not a model failing. The prompt now says what
+the flag is for in two cases and says explicitly that setting it false while
+ruling anyway is worse than either honest option, the schema description says the
+same, and `abstained_but_ruled_correctly` exists so the failure cannot hide again.
+
+Six questions cannot say anything about model choice, and nothing here is tuned
+on them beyond the two things that were plainly broken.
 
 The sample is every 6th question, roughly 100 of the 595, spread across all 17
 Laws by the file order. Deterministic rather than random, so two runs measure the

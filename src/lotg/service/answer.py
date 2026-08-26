@@ -36,16 +36,34 @@ Rules:
 - Put the citation marker for the clause that supports each statement directly \
 after it, like [2]. A statement that no clause supports does not belong.
 - Give the ruling first, in a sentence or two. Then the reason, if it needs one.
+- Name the restart and the card explicitly. "Disciplinary action is taken" is not \
+a ruling. "The player is sent off (red card) and play restarts with a direct free \
+kick" is. If a card and a restart both apply, give both.
 - Write for a referee who wants the decision, not an essay.
-- If the clauses do not decide the question, set sufficient to false, say what is \
-missing, and do not guess. Answering a question the clauses do not cover is a \
-worse failure than admitting the gap."""
+
+`sufficient` is not a confidence score, and it is not a hedge. It has exactly two \
+uses:
+- true: you are giving a ruling. Give it plainly, even if the clauses left some \
+detail open.
+- false: you are refusing to give a ruling because the clauses do not cover the \
+question. Then `answer` must say which clause would be needed and must not \
+contain a ruling at all.
+
+Never set it to false and then rule anyway. Answering a question the clauses do \
+not cover is a bad failure; pretending you did not answer while answering is a \
+worse one, because it hides the first."""
 
 
 class Ruling(BaseModel):
-    answer: str = Field(description="The ruling, with [n] markers citing clauses.")
+    answer: str = Field(
+        description="The ruling with [n] markers, or, when sufficient is false, "
+        "what the clauses fail to cover and nothing else."
+    )
     cited: list[int] = Field(description="Clause numbers used, as shown in the prompt.")
-    sufficient: bool = Field(description="False when the clauses do not decide it.")
+    sufficient: bool = Field(
+        description="True when you are giving a ruling. False only when you are "
+        "refusing to give one. Not a confidence score."
+    )
 
 
 @cache
