@@ -119,3 +119,19 @@ def test_the_sample_is_stable_across_runs():
     queries = [f"q{i}" for i in range(60)]
     assert _sample(queries, 6, None) == _sample(queries, 6, None)
     assert _sample(queries, 6, None)[:3] == ["q0", "q6", "q12"]
+
+
+def test_a_limit_thins_the_sample_instead_of_truncating_it():
+    """The file is in Law order, so the first N questions are all Law 1 to 3."""
+    from lotg.evaluate_answers import _sample
+
+    queries = [f"q{i}" for i in range(100)]
+    picked = _sample(queries, 1, 5)
+    assert picked == ["q0", "q20", "q40", "q60", "q80"]
+
+
+def test_a_limit_larger_than_the_sample_changes_nothing():
+    from lotg.evaluate_answers import _sample
+
+    queries = [f"q{i}" for i in range(10)]
+    assert _sample(queries, 1, 99) == queries

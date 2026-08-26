@@ -1,9 +1,10 @@
 {
-  "abstained": 0.3333333333333333,
-  "abstained_with_the_answer_in_hand": 0.3333333333333333,
-  "agrees_when_answered": 0.5,
-  "agrees_with_ifab": 0.5,
-  "answered": 0.6666666666666666,
+  "abstained": 0.0,
+  "abstained_but_ruled_correctly": 0.0,
+  "abstained_with_the_answer_in_hand": 0.0,
+  "agrees_when_answered": 0.6666666666666666,
+  "agrees_with_ifab": 0.6666666666666666,
+  "answered": 1.0,
   "cited_a_gold_law": 1.0,
   "cited_only_gold_laws": 1.0,
   "judge_model": "claude-sonnet-5",
@@ -19,8 +20,8 @@
   "questions": 6,
   "rows": [
     {
-      "agrees": false,
-      "answer": "The goal is disallowed and a penalty kick is retaken [1]. The encroaching team-mate committed an offence by entering the penalty area before the ball was kicked. Although the encroaching player played the ball and scored after the rebound, the encroachment itself occurred before the ball was in play, and the clause only penalises encroachment when it 'clearly impacted on the goalkeeper' or when the encroaching player 'plays the ball or challenges an opponent for the ball and then scores' - meaning from open play, not from a rebound after the goalkeeper has already made their save [1].",
+      "agrees": true,
+      "answer": "The goal is not awarded. The encroaching team-mate's position was an offence, and because the encroaching player played the ball and scored, the team-mate is penalised for encroachment [1]. Play is stopped and restarted with an indirect free kick to the defending team.",
       "cited": [
         "law-14-14.2#intro-p1"
       ],
@@ -32,7 +33,7 @@
         14
       ],
       "id": "91a37da0",
-      "note": "Official ruling: goal disallowed, indirect free kick to defending team where attacker entered the area. Candidate says goal disallowed but penalty retaken - different restart/outcome.",
+      "note": "Candidate matches official decision: goal disallowed, indirect free kick to defending team for encroachment. No card mentioned, consistent with no disciplinary sanction.",
       "question": "While the player taking the penalty kick is running to the ball, their team-mate touches the penalty area line with the foot before the ball is kicked. The goalkeeper saves the kick and the ball rebounds into the field to the attacking team player who encroached, who then plays the ball and scores. What is the correct decision?",
       "retrieved_laws": [
         14,
@@ -41,11 +42,11 @@
         10,
         16
       ],
-      "sufficient": false
+      "sufficient": true
     },
     {
       "agrees": true,
-      "answer": "Play is stopped immediately [1]. The crossbar must be repaired or replaced in position, and play is restarted with a dropped ball [1]. If the crossbar cannot be repaired, the match must be abandoned [1].",
+      "answer": "Play is stopped immediately. The match must be abandoned if the crossbar cannot be repaired and put back in position [1]. If it can be repaired, play restarts with a dropped ball [1].",
       "cited": [
         "law-01-1.10#intro"
       ],
@@ -56,7 +57,7 @@
         1
       ],
       "id": "82680c9f",
-      "note": "Candidate matches official ruling: stop play, repair/replace crossbar, abandon if not possible. The extra detail about restarting with a dropped ball is additional and not contradicted by the official answer (which doesn't specify restart method since play resumes only after repair).",
+      "note": "Candidate matches official answer: stop play, repair/replace crossbar or abandon match if not possible. The added detail about restarting with a dropped ball is extra but doesn't contradict the core decision.",
       "question": "The crossbar becomes broken during the match. What is the correct decision?",
       "retrieved_laws": [
         1,
@@ -68,8 +69,8 @@
       "sufficient": true
     },
     {
-      "agrees": true,
-      "answer": "The player being substituted must leave the field of play within ten seconds of the referee's signal [1]. The substitute cannot enter until the replaced player has left the field [1]. If the player does not leave within ten seconds, they are cautioned only if they excessively delay the restart beyond the ten seconds [2]. The substitute may not enter until the player has left, and if the ten-second limit is exceeded, the substitute can only enter with the referee's permission during the first stoppage after one minute has elapsed [2].",
+      "agrees": false,
+      "answer": "The player being substituted must leave the field of play within ten seconds of the referee's signal [1]. If the player does not leave within ten seconds, they are cautioned for excessively delaying the restart [2]. The substitute may not enter until the player has left the field [1]. Once the substituted player leaves, the substitute may enter at the halfway line with the referee's permission [1].",
       "cited": [
         "law-03-3.3#intro",
         "law-03-3.5#intro"
@@ -83,7 +84,7 @@
         12
       ],
       "id": "0cf5ab90",
-      "note": "Candidate matches the official ruling: 10-second limit to leave, caution only if excessively delayed, and substitute enters only with referee's permission at the first stoppage after one minute has elapsed.",
+      "note": "Official ruling: no caution unless the delay is excessive, play restarts, and the substitute may only enter at the next stoppage after one minute has elapsed. Candidate incorrectly states the player is automatically cautioned for exceeding ten seconds and that the substitute may enter as soon as the substituted player leaves, ignoring the one-minute restriction. These are materially different outcomes.",
       "question": "When the substitution board is being shown, the player being substituted is on the far side of the field of play, close to the touchline. After the referee signals for the substitution to take place, the player walks slowly towards the substitute who is at the halfway line. What is the correct procedure?",
       "retrieved_laws": [
         3,
@@ -96,23 +97,21 @@
     },
     {
       "agrees": false,
-      "answer": "The substituted player has committed an offence by re-entering the field of play without the referee's permission [1]. Play is restarted with a direct free kick [5] (or penalty kick if within the offender's penalty area) from the position where the substituted player kicked the ball [5]. The substituted player is also subject to disciplinary action for this misconduct [2].",
+      "answer": "The substituted player has left the field of play and must not re-enter without the referee's permission [1]. By re-entering and playing the ball, the substituted player commits an offence. The player is cautioned (yellow card) and play restarts with an indirect free kick from the position on the boundary line where the player re-entered [3].",
       "cited": [
         "law-03-3.3#intro",
-        "law-12-12.4#sending-off-offences",
-        "law-12-12.5#intro-p1"
+        "law-03-3.5#intro"
       ],
       "cited_laws": [
         3,
-        12,
-        12
+        3
       ],
       "gold_laws": [
         3,
         12
       ],
       "id": "23895bd4",
-      "note": "The candidate correctly identifies the direct free kick restart, but fails to specify the crucial disciplinary outcome. The official answer specifies a red card via two yellow cards (one for re-entering without permission, one for unsporting behavior/stopping a promising attack). The candidate merely states 'subject to disciplinary action' without specifying the red card outcome, which is a key part of the correct decision that is left vague/incomplete.",
+      "note": "Official ruling: direct free kick, and offender sent off with two yellow cards (re-entering without permission + unsporting behaviour for stopping promising attack). Candidate says only a single caution (yellow card) and an indirect free kick from the boundary line - both the restart type and the disciplinary outcome differ from the official answer.",
       "question": "A player is substituted and leaves the field of play at the nearest point. While walking along the touchline towards their technical area, the substituted player notices the ball coming towards them, with an opponent chasing it. The substituted player re-enters the field and kicks the ball to stop a promising attack. What is the correct decision?",
       "retrieved_laws": [
         3,
@@ -125,7 +124,7 @@
     },
     {
       "agrees": true,
-      "answer": "No, this is not allowed[2]. A named substitute must be identified before the match begins. The person was listed as a team official, not as a substitute, and cannot change their status during the half-time interval to enter the field of play as a substitute.",
+      "answer": "No, this is not allowed. A team official named on the team list cannot become a substitute [2]. The person must remain a team official for the match.",
       "cited": [
         "law-03-3.5#intro"
       ],
@@ -136,7 +135,7 @@
         3
       ],
       "id": "2d1d1252",
-      "note": "Candidate matches official ruling: not allowed since substitutes must be named before the match starts.",
+      "note": "Both conclude the assistant coach cannot become a substitute since they were not listed as such before the match; decisions match.",
       "question": "During the half-time interval, an assistant coach informs the referee that they want to participate in the second half as a substitute. Is this allowed if the person was listed as a team official on the team sheet?",
       "retrieved_laws": [
         3,
@@ -145,11 +144,11 @@
         7,
         3
       ],
-      "sufficient": false
+      "sufficient": true
     },
     {
-      "agrees": false,
-      "answer": "Stop play and caution the player [3]. The defender re-entered without permission, which is a cautionable offence. Even though there was no interference with play, the re-entry without permission itself requires the caution. Restart with an indirect free kick from the position of the ball when play was stopped [1].",
+      "agrees": true,
+      "answer": "The player is cautioned (yellow card) for re-entering without the referee's permission [3]. Play continues without stoppage because the player does not interfere with play [1].",
       "cited": [
         "law-03-3.8#intro",
         "law-12-12.4#cautionable-offences"
@@ -164,7 +163,7 @@
         12
       ],
       "id": "8a18b5f8",
-      "note": "Official ruling: play continues (advantage due to promising attack), caution given only when ball next out of play, no free kick awarded. Candidate says to stop play immediately and award an indirect free kick, which contradicts the advantage principle applied here.",
+      "note": "Both agree: play continues advantage since no interference, and the player is cautioned when ball next out of play for re-entering without permission.",
       "question": "A defender of Team A, who was treated outside the field of play, is ready to continue and re-enters the field without the required permission. What is the correct decision if Team B starts a promising attack and the player does not interfere with play/opponents?",
       "retrieved_laws": [
         3,

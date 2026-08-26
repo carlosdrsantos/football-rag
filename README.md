@@ -364,8 +364,31 @@ the flag is for in two cases and says explicitly that setting it false while
 ruling anyway is worse than either honest option, the schema description says the
 same, and `abstained_but_ruled_correctly` exists so the failure cannot hide again.
 
+Rerunning the same six: abstentions went to zero, and agreement went from three
+of six to four. The two that flipped did not just report better, they ruled
+better. One had answered "the penalty kick is retaken" behind a `false` flag and
+now gives IFAB's actual ruling, an indirect free kick to the defending team.
+Forcing the model to commit to a decision seems to have made it decide more
+carefully, which was not the point of the change.
+
+Two failures remain, and both are the same shape: a procedural question needing
+several clauses combined, where it gets one part right and another wrong. A
+single caution where the Laws give two yellows and a red, an indirect free kick
+where they give a direct one. Those are not prompt problems.
+
+**Abstention is now zero, and that is not yet good news.** Nothing in six
+questions should have been refused, so the run says only that the flag stopped
+being used as a hedge. Whether the refusal path still fires when it should is
+untested, and overcorrecting a model into never refusing is the obvious way to
+break it.
+
+`--limit` also used to truncate. faqs.jsonl is in Law order, so the first six
+questions of anything are Laws 1 to 3 and the smoke run looked more
+representative than it was. It now thins the sample evenly instead: 25 questions
+covers 14 of the 17 Laws rather than 3.
+
 Six questions cannot say anything about model choice, and nothing here is tuned
-on them beyond the two things that were plainly broken.
+on them beyond what was plainly broken.
 
 The sample is every 6th question, roughly 100 of the 595, spread across all 17
 Laws by the file order. Deterministic rather than random, so two runs measure the

@@ -94,8 +94,17 @@ def _progress(stage: str, done: int, total: int) -> None:
 
 
 def _sample(queries: list[gold.Query], stride: int, limit: int | None) -> list[gold.Query]:
+    """Every Nth question, and a --limit that thins rather than truncates.
+
+    faqs.jsonl is in Law order, so taking the first N of anything means Laws 1 to
+    3 and nothing else. A six-question smoke run did exactly that and looked more
+    representative than it was.
+    """
     picked = queries[::stride]
-    return picked[:limit] if limit else picked
+    if not limit or limit >= len(picked):
+        return picked
+    step = len(picked) / limit
+    return [picked[int(index * step)] for index in range(limit)]
 
 
 def evaluate(
