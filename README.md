@@ -348,6 +348,21 @@ The sample is every 6th question, roughly 100 of the 595, spread across all 17
 Laws by the file order. Deterministic rather than random, so two runs measure the
 same questions and can be compared.
 
+Retrieval runs first and sequentially, because a psycopg connection is not safe
+to share between threads and 100 local searches cost about 35 seconds anyway. The
+two API calls per question depend on nothing else, so those go through a thread
+pool, eight at a time. The first version ran all 200 calls one after another and
+printed nothing until the end, which made a slow run and a hung one look
+identical.
+
+The judge defaults to `claude-sonnet-5` while the generator defaults to
+`claude-opus-5`. Deciding whether two answers reach the same ruling, with both in
+front of you, is the easy half and does not need the expensive model. It also
+should not be the same model: one grading its own output rates it generously.
+
+Which generator is worth paying for is a question to measure, not to assume, so
+`--model` exists and the answer belongs in this table once it has been run.
+
 **This has not been run yet.** It needs a key, and no numbers are reported here
 until it has been.
 
@@ -416,7 +431,8 @@ make db          # Postgres with pgvector
 make index       # embed the chunks into pgvector
 make eval        # all four retrievers -> evals/baseline.json, about 3.5 minutes
 make serve       # http://localhost:8000/docs
-make eval-answers  # needs ANTHROPIC_API_KEY, costs a couple of dollars a run
+make eval-answers ARGS="--limit 6 --model claude-haiku-4-5"   # cheap smoke test
+make eval-answers  # the real thing: ~100 questions, needs ANTHROPIC_API_KEY
 make search Q="when can a coach be sent off"
 make search R=hybrid Q="..."    # or R=dense, R=lexical, to see what reranking changed
 ```

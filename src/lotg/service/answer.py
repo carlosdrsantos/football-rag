@@ -73,12 +73,14 @@ def cited_hits(ruling: Ruling, hits: list[Hit]) -> list[Hit]:
     return ordered
 
 
-def answer(question: str, hits: list[Hit]) -> tuple[Ruling, list[Hit]]:
+def answer(
+    question: str, hits: list[Hit], model: str | None = None
+) -> tuple[Ruling, list[Hit]]:
     if not hits:
         return Ruling(answer="Nothing in the Laws matched that.", cited=[], sufficient=False), []
 
     response = client().messages.parse(
-        model=MODEL,
+        model=model or MODEL,
         max_tokens=MAX_TOKENS,
         system=SYSTEM,
         messages=[{"role": "user", "content": prompt(question, hits)}],

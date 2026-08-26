@@ -12,11 +12,24 @@ compare two answers, never to grade retrieval.
 
 The sample is every 6th question rather than a random draw, so a rerun measures
 the same questions and two runs can be compared.
+
+Retrieval runs first and sequentially, because a psycopg connection is not safe
+to share across threads and 100 local searches cost about 35 seconds. The two API
+calls per question are independent of every other question, so those run in a
+thread pool. Sequentially they were the whole runtime.
+
+The judge defaults to a different and cheaper model than the generator. Deciding
+whether two answers reach the same ruling, with both in front of you, is the easy
+half, and a model grading its own output rates it generously.
 """
 
 import argparse
+import itertools
 import json
+import sys
+import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -30,6 +43,8 @@ FAQS = Path("data/processed/faqs.jsonl")
 RESULTS = Path("evals")
 STRIDE = 6
 TOP_K = 5
+WORKERS = 8
+JUDGE_MODEL = "claude-sonnet-5"
 
 JUDGE_SYSTEM = """You are checking whether two answers to a refereeing question \
 give the same ruling.
@@ -49,9 +64,11 @@ class Judgement(BaseModel):
     note: str
 
 
-def judge(question: str, official: str, candidate: str) -> Judgement:
+def judge(
+    question: str, official: str, candidate: str, model: str = JUDGE_MODEL
+) -> Judgement:
     response = answering.client().messages.parse(
-        model=answering.MODEL,
+        model=model,
         max_tokens=1000,
         system=JUDGE_SYSTEM,
         messages=[
@@ -69,12 +86,26 @@ def judge(question: str, official: str, candidate: str) -> Judgement:
     return response.parsed_output
 
 
+def _progress(stage: str, done: int, total: int) -> None:
+    """A long run with no output is indistinguishable from a hung one."""
+    print(f"\r  {stage} {done}/{total}", end="", file=sys.stderr, flush=True)
+    if done == total:
+        print(file=sys.stderr)
+
+
 def _sample(queries: list[gold.Query], stride: int, limit: int | None) -> list[gold.Query]:
     picked = queries[::stride]
     return picked[:limit] if limit else picked
 
 
-def evaluate(stride: int = STRIDE, limit: int | None = None, k: int = TOP_K) -> dict:
+def evaluate(
+    stride: int = STRIDE,
+    limit: int | None = None,
+    k: int = TOP_K,
+    workers: int = WORKERS,
+    model: str | None = None,
+    judge_model: str = JUDGE_MODEL,
+) -> dict:
     faqs = [json.loads(line) for line in FAQS.open(encoding="utf-8")]
     official = {}
     for faq in faqs:
@@ -84,31 +115,50 @@ def evaluate(stride: int = STRIDE, limit: int | None = None, k: int = TOP_K) -> 
     queries = _sample(gold.build(faqs), stride, limit)
     vectors = embedder.encode_queries([query.question for query in queries])
 
-    rows = []
+    retrieved = []
     with store.connect() as connection:
         lexical = retrieve.Lexical(chunks)
         stack = retrieve.Reranked(retrieve.Hybrid(retrieve.Dense(connection), lexical))
+        for index, (query, vector) in enumerate(zip(queries, vectors), start=1):
+            retrieved.append((query, stack.search(query.question, vector, k)))
+            _progress("retrieving", index, len(queries))
 
-        for query, vector in zip(queries, vectors):
-            hits = stack.search(query.question, vector, k)
-            ruling, cited = answering.answer(query.question, hits)
-            verdict = judge(query.question, official[query.question], ruling.answer)
-            rows.append(
-                {
-                    "id": query.id,
-                    "question": query.question,
-                    "gold_laws": sorted(query.gold),
-                    "retrieved_laws": [hit.law_number for hit in hits],
-                    "sufficient": ruling.sufficient,
-                    "cited_laws": [hit.law_number for hit in cited],
-                    "cited": [hit.id for hit in cited],
-                    "answer": ruling.answer,
-                    "agrees": verdict.agrees,
-                    "note": verdict.note,
-                }
-            )
+    done = itertools.count(1)
+    lock = threading.Lock()
 
-    return {"model": answering.MODEL, "k": k, "stride": stride, **_score(rows), "rows": rows}
+    def work(pair):
+        query, hits = pair
+        ruling, cited = answering.answer(query.question, hits, model=model)
+        verdict = judge(query.question, official[query.question], ruling.answer, judge_model)
+        with lock:
+            _progress("asking", next(done), len(retrieved))
+        return {
+            "id": query.id,
+            "question": query.question,
+            "gold_laws": sorted(query.gold),
+            "retrieved_laws": [hit.law_number for hit in hits],
+            "sufficient": ruling.sufficient,
+            "cited_laws": [hit.law_number for hit in cited],
+            "cited": [hit.id for hit in cited],
+            "answer": ruling.answer,
+            "agrees": verdict.agrees,
+            "note": verdict.note,
+        }
+
+    # map keeps the input order, so the output does not depend on which call
+    # finished first and two runs stay comparable.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        rows = list(pool.map(work, retrieved))
+    print(file=sys.stderr)
+
+    return {
+        "model": model or answering.MODEL,
+        "judge_model": judge_model,
+        "k": k,
+        "stride": stride,
+        **_score(rows),
+        "rows": rows,
+    }
 
 
 def _score(rows: list[dict]) -> dict:
@@ -118,7 +168,9 @@ def _score(rows: list[dict]) -> dict:
 
     # Abstaining is right when the clauses really did not hold the answer, and a
     # failure when they did. Only the second kind is worth fixing.
-    wrongly_abstained = [row for row in abstained if set(row["retrieved_laws"]) & set(row["gold_laws"])]
+    wrongly_abstained = [
+        row for row in abstained if set(row["retrieved_laws"]) & set(row["gold_laws"])
+    ]
     grounded = [row for row in answered if set(row["cited_laws"]) & set(row["gold_laws"])]
     clean = [row for row in answered if set(row["cited_laws"]) <= set(row["gold_laws"])]
 
@@ -142,6 +194,7 @@ def _score(rows: list[dict]) -> dict:
 
 def report(result: dict) -> None:
     print(f"model      {result['model']}, top {result['k']} clauses")
+    print(f"judge      {result['judge_model']}")
     print(f"questions  {result['questions']} (every {result['stride']}th)\n")
     print(f"  agrees with IFAB          {result['agrees_with_ifab']:.1%}")
     print(f"  agrees when it answered   {result['agrees_when_answered']:.1%}")
@@ -158,10 +211,20 @@ def main() -> None:
     parser.add_argument("--stride", type=int, default=STRIDE, help="take every Nth question")
     parser.add_argument("--limit", type=int, help="stop after N of the sample")
     parser.add_argument("-k", type=int, default=TOP_K, help="clauses given to the model")
+    parser.add_argument("--workers", type=int, default=WORKERS, help="parallel questions")
+    parser.add_argument("--model", help=f"generator, default {answering.MODEL}")
+    parser.add_argument("--judge", default=JUDGE_MODEL, help="model that compares answers")
     parser.add_argument("--save", default="answers", help="name under evals/")
     args = parser.parse_args()
 
-    result = evaluate(stride=args.stride, limit=args.limit, k=args.k)
+    result = evaluate(
+        stride=args.stride,
+        limit=args.limit,
+        k=args.k,
+        workers=args.workers,
+        model=args.model,
+        judge_model=args.judge,
+    )
     report(result)
 
     RESULTS.mkdir(exist_ok=True)
